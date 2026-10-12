@@ -1603,7 +1603,7 @@ async function abrirPainelAdmin(){
     const id=globalRole?firstActive:adminSession.ubsId;
     if(id){$("adminUBSSelect").value=id;await carregarDadosAdmin(id);}
     if(adminSession.tipo==='secretaria'){await carregarPainelSecretaria();abrirAbaAdmin('secretaria');}
-    else{abrirAbaAdmin('dados');if(adminSession.tipo==='desenvolvedor')await carregarContasSecretaria();}
+    else abrirAbaAdmin(adminSession.tipo==='desenvolvedor'?'secretaria-accounts':'dados');
     atualizarBotaoArquivarUBS();
 }
 function abrirTrocaSenhaAdmin(){if(adminSession?.tipo!=="desenvolvedor"){toast("Somente o desenvolvedor pode alterar esta senha.");return;}["adminCurrentPassword","adminNewPassword","adminConfirmPassword"].forEach(id=>$(id).value="");$("adminChangePasswordModal").classList.remove("hidden");$("adminCurrentPassword").focus();}
@@ -1653,9 +1653,18 @@ function preencherSelectAdmin() {
 
 async function trocarUBSAdmin(){
     await carregarDadosAdmin($("adminUBSSelect").value);atualizarBotaoArquivarUBS();
-    if(adminSession?.tipo!=='secretaria')abrirAbaAdmin('dados');
+    const atual=window.adminAbaAtual;
+    if(ABAS_ADMIN_POR_UBS.includes(atual))abrirAbaAdmin(atual);
 }
+const ABAS_ADMIN_POR_UBS = ["dados", "funcionarios", "consultas", "waitlist", "exames"];
 function abrirAbaAdmin(aba) {
+    window.adminAbaAtual = aba;
+    // O seletor de UBS só aparece nas abas que dependem de uma unidade.
+    const gestaoGlobal = ["desenvolvedor", "secretaria"].includes(adminSession?.tipo);
+    const abaDeUBS = ABAS_ADMIN_POR_UBS.includes(aba);
+    $("seletorDesenvolvedor")?.classList.toggle("hidden", !(gestaoGlobal && abaDeUBS));
+    if (!abaDeUBS) $("formNovaUBS")?.classList.add("hidden");
+    document.querySelectorAll(".admin-tabs button").forEach(botao => botao.classList.toggle("active", botao.getAttribute("onclick") === `abrirAbaAdmin('${aba}')`));
 
     $("adminDados")
         .classList.add("hidden");
