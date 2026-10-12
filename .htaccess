@@ -5,10 +5,10 @@ RewriteEngine On
 RewriteRule ^ubs/?$ index.php?portal=ubs [QSA,L]
 RewriteRule ^clinica/?$ index.php?portal=clinica [QSA,L]
 
-<FilesMatch "^(config|common|database)\.php$">
+<FilesMatch "^(config|config\.local|common|database|postgres_compat)\.php$">
     Require all denied
 </FilesMatch>
 
-<FilesMatch "\.(sql|txt)$">
+<FilesMatch "(\.(sql|txt|lock)|^\.env.*)$">
     Require all denied
 </FilesMatch>

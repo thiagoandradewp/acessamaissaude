@@ -15,6 +15,12 @@ if (preg_match('~^(.*?)/(?:ubs|clinica)$~', $portalPath, $baseMatch)) {
     $scriptDir = rtrim(str_replace('\\', '/', dirname($scriptPath)), '/');
     if ($scriptDir !== '/api' && $scriptDir !== '.') $appBasePath = $scriptDir;
 }
+// Primeira visita numa hospedagem sem configuração: leva ao instalador web.
+$hasDatabaseEnv = getenv('ACESSA_DB_HOST') || getenv('TIDB_HOST') || getenv('DATABASE_URL');
+if (!$hasDatabaseEnv && is_file(__DIR__ . '/install.php') && !is_file(__DIR__ . '/config.local.php') && !is_file(__DIR__ . '/install.lock')) {
+    header('Location: ' . $appBasePath . '/install.php', true, 302);
+    exit;
+}
 if ($appPortal !== '' && $requestPath !== $portalPath) {
     $redirectUrl = $appBasePath . '/' . $appPortal;
     if ($appPortal === 'clinica') {

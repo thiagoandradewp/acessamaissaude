@@ -3,5 +3,7 @@
 !.env.example
 .vercel
 uploads/
+config.local.php
+install.lock
 *.log
 .DS_Store

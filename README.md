@@ -2,6 +2,16 @@
 
 Este repositório contém a versão PHP do Acessa+ Saúde preparada para o runtime PHP comunitário recomendado pelo Vercel. O frontend continua em `index.php` e as chamadas existentes para `api.php?action=...` são encaminhadas por `api/api.php`.
 
+## Instalação em hospedagem compartilhada (cPanel) ou VPS
+
+1. No painel da hospedagem, crie um banco MySQL vazio e um usuário, e vincule o usuário ao banco com todos os privilégios.
+2. Envie todos os arquivos do projeto para a pasta do site (ex.: `public_html`).
+3. Abra o endereço do site: na primeira visita ele leva ao instalador (`/install.php`).
+4. Informe os dados do banco e crie a senha do administrador (Desenvolvedor). Se quiser testar, marque as UBS de demonstração e escolha a cidade/UF delas.
+5. Ao terminar, apague `install.php` da hospedagem.
+
+O instalador nunca apaga dados: se o banco já tiver o sistema instalado, ele para. As credenciais ficam em `config.local.php` (protegido pelo `.htaccess` e fora do Git); variáveis de ambiente `ACESSA_DB_*` continuam tendo prioridade. Requisitos: PHP 8.1+ com `pdo_mysql`.
+
 ## Importante antes do deploy
 
 O Vercel não fornece um MySQL local persistente. Antes de publicar, crie um banco MySQL externo acessível pela internet e configure as variáveis `ACESSA_DB_*` no painel do Vercel. O arquivo `database.sql` contém o esquema inicial.

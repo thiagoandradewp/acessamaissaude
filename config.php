@@ -9,6 +9,17 @@ const DB_NAME = 'conecta_saude';
 const DB_USER = 'root';
 const DB_PASS = '';
 
+// Credenciais gravadas pelo instalador web (install.php). Variáveis de ambiente continuam tendo prioridade.
+function db_local_config(): array
+{
+    static $config = null;
+    if ($config === null) {
+        $file = __DIR__ . '/config.local.php';
+        $config = is_file($file) ? (array)(require $file) : [];
+    }
+    return $config;
+}
+
 function db(): PDO
 {
     static $pdo = null;
@@ -27,15 +38,16 @@ function db(): PDO
         // de dados deve ser executada automaticamente durante uma requisição.
         return $pdo;
     }
-    $manualHost = getenv('ACESSA_DB_HOST') ?: '';
+    $local = db_local_config();
+    $manualHost = getenv('ACESSA_DB_HOST') ?: (string)($local['host'] ?? '');
     $tidbHost = getenv('TIDB_HOST') ?: '';
     $useTiDB = $manualHost === '' && $tidbHost !== '';
     $host = $manualHost ?: ($tidbHost ?: DB_HOST);
-    $port = getenv('ACESSA_DB_PORT') ?: ($useTiDB ? (getenv('TIDB_PORT') ?: '4000') : DB_PORT);
-    $user = getenv('ACESSA_DB_USER') ?: ($useTiDB ? (getenv('TIDB_USER') ?: DB_USER) : DB_USER);
+    $port = getenv('ACESSA_DB_PORT') ?: ($useTiDB ? (getenv('TIDB_PORT') ?: '4000') : (string)($local['port'] ?? DB_PORT));
+    $user = getenv('ACESSA_DB_USER') ?: ($useTiDB ? (getenv('TIDB_USER') ?: DB_USER) : (string)($local['user'] ?? DB_USER));
     $pass = getenv('ACESSA_DB_PASS');
-    if ($pass === false || $pass === '') $pass = $useTiDB ? (getenv('TIDB_PASSWORD') ?: '') : DB_PASS;
-    $dbName = getenv('ACESSA_DB_NAME') ?: ($useTiDB ? (getenv('TIDB_DATABASE') ?: DB_NAME) : DB_NAME);
+    if ($pass === false || $pass === '') $pass = $useTiDB ? (getenv('TIDB_PASSWORD') ?: '') : (string)($local['pass'] ?? DB_PASS);
+    $dbName = getenv('ACESSA_DB_NAME') ?: ($useTiDB ? (getenv('TIDB_DATABASE') ?: DB_NAME) : (string)($local['name'] ?? DB_NAME));
     $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $dbName . ';charset=utf8mb4';
     $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
