@@ -197,3 +197,13 @@ body.clinic-login-route #appShell{display:none!important}
 .schedule-day-tab.is-selected .schedule-tab-hours{color:rgba(255,255,255,.88)}
 .schedule-summary{line-height:1.5;overflow-wrap:anywhere}
 @media(max-width:520px){.schedule-day-tab{min-height:52px;padding:6px 3px}.schedule-tab-hours{font-size:8px}}
+
+/* Lista de espera da UBS: vagas repassadas aguardando aviso e selo na aba. */
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;margin-left:6px;padding:0 6px;border-radius:999px;background:#d64545;color:#fff;font-size:11px;font-weight:800;line-height:1}
+.waitlist-notices{margin:18px 0 22px;padding:16px;border:1px solid #f1c27d;border-radius:16px;background:#fff8ec}
+.waitlist-notices h4{color:#8a5300;margin-bottom:4px}
+.waitlist-notices .admin-appointment{background:#fff}
+.waitlist-pending-title{margin:18px 0 8px}
+.waitlist-slot{display:inline-block;margin-top:6px;padding:4px 10px;border-radius:999px;background:var(--mint);color:var(--teal-dark,#075b5d);font-size:12px;font-weight:700}
+.waitlist-slot.is-full{background:#eef2f3;color:var(--muted)}
+.location-locked{background:#f1f6f7;color:var(--muted)}

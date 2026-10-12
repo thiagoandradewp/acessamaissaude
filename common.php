@@ -338,5 +338,70 @@ function authorize_ubs(string $ubsId): array
         ], 403);
     }
 
+    if ($session['tipo'] === 'secretaria') {
+        assert_ubs_in_admin_region(db(), $session, $ubsId);
+    }
+
     return $session;
+}
+
+function normalizar_nome_cidade(string $cidade): string
+{
+    return trim((string)preg_replace('/\s+/u', ' ', $cidade));
+}
+
+function chave_cidade(string $cidade): string
+{
+    $cidade = normalizar_nome_cidade($cidade);
+    return function_exists('mb_strtolower') ? mb_strtolower($cidade, 'UTF-8') : strtolower($cidade);
+}
+
+/**
+ * Região (cidade/UF) a que uma conta da Secretaria está restrita.
+ * Retorna null quando a conta não tem localização definida (contas antigas mantêm o escopo global).
+ */
+function admin_region_from_row(?array $row): ?array
+{
+    if (!$row) return null;
+    $cidade = normalizar_nome_cidade((string)($row['cidade'] ?? ''));
+    $estado = strtoupper(trim((string)($row['estado'] ?? '')));
+    return ($cidade !== '' && $estado !== '') ? ['cidade' => $cidade, 'estado' => $estado] : null;
+}
+
+function ubs_pertence_regiao(array $ubs, ?array $region): bool
+{
+    if ($region === null) return true;
+    return strtoupper(trim((string)($ubs['estado'] ?? ''))) === $region['estado']
+        && chave_cidade((string)($ubs['cidade'] ?? '')) === chave_cidade($region['cidade']);
+}
+
+function admin_region(PDO $pdo, array $session): ?array
+{
+    if (($session['tipo'] ?? '') !== 'secretaria') return null;
+    static $cache = [];
+    $id = (int)($session['id'] ?? 0);
+    if (!array_key_exists($id, $cache)) {
+        $q = $pdo->prepare("SELECT cidade, estado FROM administradores WHERE id=? AND tipo='secretaria'");
+        $q->execute([$id]);
+        $row = $q->fetch(PDO::FETCH_ASSOC);
+        if (!$row) json_response(['success' => false, 'message' => 'Conta da Secretaria não encontrada.'], 403);
+        $cache[$id] = admin_region_from_row($row);
+    }
+    return $cache[$id];
+}
+
+function assert_ubs_in_admin_region(PDO $pdo, array $session, string $ubsId): void
+{
+    $region = admin_region($pdo, $session);
+    if ($region === null) return;
+    $q = $pdo->prepare('SELECT cidade, estado FROM ubs WHERE id = ?');
+    $q->execute([$ubsId]);
+    $ubs = $q->fetch(PDO::FETCH_ASSOC);
+    if (!$ubs) json_response(['success' => false, 'message' => 'UBS não encontrada.'], 404);
+    if (!ubs_pertence_regiao($ubs, $region)) {
+        json_response([
+            'success' => false,
+            'message' => 'Esta UBS não pertence ao município da sua Secretaria de Saúde.'
+        ], 403);
+    }
 }

@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS lista_espera (
     data_consulta DATE NOT NULL,
     status ENUM('pendente','agendado','cancelado') NOT NULL DEFAULT 'pendente',
     consulta_id VARCHAR(60) NULL,
+    aviso_enviado_em DATETIME NULL,
     criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_lista_espera (paciente_id, ubs_id, especialidade, data_consulta),
     INDEX idx_lista_espera_fila (ubs_id,especialidade,data_consulta,status,id),

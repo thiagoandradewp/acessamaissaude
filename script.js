@@ -18,6 +18,7 @@ function appPath(path) {
 const API_URL = appPath("/api.php");
 const STORAGE_PATIENT = "acessaMaisSaude_patient_v1";
 const STORAGE_LAST_UBS = "acessaMaisSaude_last_ubs_v1";
+const STORAGE_LAST_LOCATION = "acessaMaisSaude_last_location_v1";
 const CPF_STORAGE_KEY = 'acessaMaisSaude_cpf_v1';
 
 const HORARIOS_MANHA = [
@@ -514,6 +515,7 @@ async function salvarPaciente() {
             JSON.stringify(data.patient)
         );
         sessionStorage.setItem(STORAGE_LAST_UBS, String(data.patient?.ubsId || ubsId));
+        salvarLocalizacaoPaciente($("estadoPaciente").value, $("cidadePaciente").value);
 
         definirModoUsuario(true);
 
@@ -593,9 +595,14 @@ function renderUBS(showAll = false) {
     const paciente = JSON.parse(sessionStorage.getItem(STORAGE_PATIENT) || "null");
     const preferredId = paciente?.ubsId || sessionStorage.getItem(STORAGE_LAST_UBS);
     const hasPreferred = preferredId && ubsList.some(ubs => String(ubs.id) === String(preferredId));
+    const preferida = ubsList.find(ubs => String(ubs.id) === String(preferredId));
+    const lembrada = lerLocalizacaoPaciente();
+    const estado = String(preferida?.estado || lembrada.estado || "").trim().toUpperCase();
+    const cidade = preferida?.cidade || lembrada.cidade || "";
+    const daCidade = estado && cidade ? filtrarUBSPorLocalizacao(ubsList, estado, cidade) : [];
     const unidades = !showAll && hasPreferred
         ? ubsList.filter(ubs => String(ubs.id) === String(preferredId))
-        : ubsList;
+        : (daCidade.length ? daCidade : ubsList);
     unidades.forEach(ubs => {
         const card = document.createElement("div");
         card.className = "ubs-card";
@@ -1306,7 +1313,28 @@ async function cancelarConsultaPaciente(id) {
 }
 
 function filtrarUBSPorLocalizacao(unidades, estado, cidade) {
-    return unidades.filter(unidade => String(unidade.estado || "").trim().toUpperCase() === estado && String(unidade.cidade || "").trim().toLocaleLowerCase("pt-BR") === String(cidade || "").trim().toLocaleLowerCase("pt-BR"));
+    return unidades.filter(unidade => String(unidade.estado || "").trim().toUpperCase() === estado && chaveCidade(unidade.cidade) === chaveCidade(cidade));
+}
+function chaveCidade(cidade) {
+    return String(cidade || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
+}
+// Uma opção por cidade, mesmo que as UBS tenham sido cadastradas com grafias diferentes ("Serra" e "serra").
+function cidadesDoEstado(unidades, estado) {
+    const porChave = new Map();
+    unidades.filter(u => String(u.estado || "").trim().toUpperCase() === estado).forEach(u => {
+        const nome = String(u.cidade || "").trim().replace(/\s+/g, " ");
+        if (nome && !porChave.has(chaveCidade(nome))) porChave.set(chaveCidade(nome), nome);
+    });
+    return [...porChave.values()].sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+function lerLocalizacaoPaciente() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_LAST_LOCATION) || "null") || {}; } catch (_e) { return {}; }
+}
+function salvarLocalizacaoPaciente(estado, cidade) {
+    try {
+        if (estado && cidade) localStorage.setItem(STORAGE_LAST_LOCATION, JSON.stringify({ estado, cidade }));
+        else localStorage.removeItem(STORAGE_LAST_LOCATION);
+    } catch (_e) {}
 }
 function preencherSelectUBSPaciente() {
     const estadoSelect = $("estadoPaciente");
@@ -1317,7 +1345,8 @@ function preencherSelectUBSPaciente() {
     const disponiveis = ubsList.filter(u => String(u.estado || "").trim() && String(u.cidade || "").trim());
     const preferidaId = sessionStorage.getItem(STORAGE_LAST_UBS);
     const preferida = disponiveis.find(u => String(u.id) === String(preferidaId));
-    const estados = [...new Set(disponiveis.map(u => String(u.estado).toUpperCase()))].sort();
+    const lembrada = lerLocalizacaoPaciente();
+    const estados = [...new Set(disponiveis.map(u => String(u.estado).trim().toUpperCase()))].sort();
     const nomesEstados = {AC:"Acre",AL:"Alagoas",AP:"Amapá",AM:"Amazonas",BA:"Bahia",CE:"Ceará",DF:"Distrito Federal",ES:"Espírito Santo",GO:"Goiás",MA:"Maranhão",MT:"Mato Grosso",MS:"Mato Grosso do Sul",MG:"Minas Gerais",PA:"Pará",PB:"Paraíba",PR:"Paraná",PE:"Pernambuco",PI:"Piauí",RJ:"Rio de Janeiro",RN:"Rio Grande do Norte",RS:"Rio Grande do Sul",RO:"Rondônia",RR:"Roraima",SC:"Santa Catarina",SP:"São Paulo",SE:"Sergipe",TO:"Tocantins"};
 
     estadoSelect.innerHTML = '<option value="">Selecione o estado</option>' + estados.map(uf => `<option value="${escapeAttr(uf)}">${escapeHTML(nomesEstados[uf] ? `${nomesEstados[uf]} (${uf})` : uf)}</option>`).join("");
@@ -1329,35 +1358,40 @@ function preencherSelectUBSPaciente() {
             ? "Nenhuma UBS tem cidade e UF cadastradas. Peça à Secretaria ou ao administrador para atualizar a localização das unidades."
             : `${semLocalizacao} UBS sem cidade/UF cadastradas não aparecem até que a localização seja atualizada.`;
     }
-    estadoSelect.value = preferida?.estado ? String(preferida.estado).toUpperCase() : "";
+    const estadoInicial = preferida?.estado ? String(preferida.estado).trim().toUpperCase() : String(lembrada.estado || "");
+    estadoSelect.value = estados.includes(estadoInicial) ? estadoInicial : (estados.length === 1 ? estados[0] : "");
 
-    const atualizarCidades = (cidadeInicial = "") => {
-        const cidades = [...new Set(disponiveis.filter(u => String(u.estado).toUpperCase() === estadoSelect.value).map(u => String(u.cidade).trim()))].sort((a,b) => a.localeCompare(b, "pt-BR"));
-        cidadeSelect.innerHTML = `<option value="">${estadoSelect.value ? "Selecione a cidade" : "Selecione primeiro o estado"}</option>` + cidades.map(cidade => `<option value="${escapeAttr(cidade)}">${escapeHTML(cidade)}</option>`).join("");
-        cidadeSelect.disabled = !estadoSelect.value || cidades.length === 0;
-        cidadeSelect.value = cidades.includes(cidadeInicial) ? cidadeInicial : "";
-        atualizarUBSs();
-    };
     const atualizarUBSs = () => {
-        const localizadas = filtrarUBSPorLocalizacao(disponiveis, estadoSelect.value, cidadeSelect.value);
+        const localizadas = cidadeSelect.value ? filtrarUBSPorLocalizacao(disponiveis, estadoSelect.value, cidadeSelect.value) : [];
         ubsSelect.innerHTML = `<option value="">${cidadeSelect.value ? "Selecione sua UBS" : "Selecione primeiro a cidade"}</option>` + localizadas.map(u => `<option value="${escapeAttr(u.id)}">${escapeHTML(u.nome)}</option>`).join("");
         ubsSelect.disabled = localizadas.length === 0;
         if (preferidaId && localizadas.some(u => String(u.id) === String(preferidaId))) ubsSelect.value = String(preferidaId);
+        else if (localizadas.length === 1) ubsSelect.value = String(localizadas[0].id);
+    };
+    const atualizarCidades = (cidadeInicial = "") => {
+        const cidades = estadoSelect.value ? cidadesDoEstado(disponiveis, estadoSelect.value) : [];
+        cidadeSelect.innerHTML = `<option value="">${estadoSelect.value ? "Selecione a cidade" : "Selecione primeiro o estado"}</option>` + cidades.map(cidade => `<option value="${escapeAttr(cidade)}">${escapeHTML(cidade)}</option>`).join("");
+        cidadeSelect.disabled = !estadoSelect.value || cidades.length === 0;
+        const inicial = cidades.find(cidade => chaveCidade(cidade) === chaveCidade(cidadeInicial));
+        cidadeSelect.value = inicial || (cidades.length === 1 ? cidades[0] : "");
+        atualizarUBSs();
     };
 
     estadoSelect.onchange = () => {
         sessionStorage.removeItem(STORAGE_LAST_UBS);
         atualizarCidades();
+        salvarLocalizacaoPaciente(estadoSelect.value, cidadeSelect.value);
     };
     cidadeSelect.onchange = () => {
         sessionStorage.removeItem(STORAGE_LAST_UBS);
         atualizarUBSs();
+        salvarLocalizacaoPaciente(estadoSelect.value, cidadeSelect.value);
     };
     ubsSelect.onchange = () => {
         if (ubsSelect.value) sessionStorage.setItem(STORAGE_LAST_UBS, String(ubsSelect.value));
         else sessionStorage.removeItem(STORAGE_LAST_UBS);
     };
-    atualizarCidades(preferida?.cidade || "");
+    atualizarCidades(preferida?.cidade || lembrada.cidade || "");
 }
 function abrirSuporte(){const p=JSON.parse(sessionStorage.getItem(STORAGE_PATIENT)||'null');if(p){$("suporteNome").value=p.nome||'';$("suporteTelefone").value=p.telefone||'';}const clinic=!!window.publicClinicSlug;const title=$("supportModal")?.querySelector('h2');const hint=$("supportModal")?.querySelector('.subtitle');if(title)title.textContent=clinic?'Fale com a clínica':'Como podemos ajudar?';const fabLabel=$("supportFabLabel");if(fabLabel)fabLabel.textContent=clinic?'Fale com a clínica':'Suporte ao paciente';if(hint)hint.textContent=clinic?'Sua solicitação será recebida primeiro pela clínica. Ela poderá responder, resolver ou encaminhar apenas problemas técnicos.':'Envie sua dúvida e guarde o protocolo para acompanhar a resposta.';$("supportModal").classList.remove('hidden');carregarMeuSuporte();}
 function fecharSuporte(){$("supportModal").classList.add('hidden');}
@@ -1544,8 +1578,11 @@ async function realizarLogin() {
 
 }
 
-async function carregarDadosAdmin(id){try{const data=await api('admin_ubs_data',{params:{ubs_id:id}});const i=ubsList.findIndex(u=>u.id===id);if(i>=0)ubsList[i]=data.ubs;const u=data.ubs;[ ['editNomeUBS','nome'],['editEndereco','endereco'],['editCidade','cidade'],['editEstado','estado'],['editTelefone','telefone'],['editHorario','horario'],['editUsuario','usuario'],['editLimiteDiario','limiteDiario'] ].forEach(([a,b])=>$(a).value=u[b]||'');$("editEspecialidades").value=(u.especialidades||[]).join('\n');$("editServicos").value=(u.servicos||[]).join('\n');$("editCampanhas").value=(u.campanhas||[]).join('\n');$("editDocumentos").value=(u.documentos||[]).join('\n');renderFuncionariosAdmin();}catch(e){toast(e.message);}}
+async function carregarDadosAdmin(id){try{const data=await api('admin_ubs_data',{params:{ubs_id:id}});const i=ubsList.findIndex(u=>u.id===id);if(i>=0)ubsList[i]=data.ubs;const u=data.ubs;[ ['editNomeUBS','nome'],['editEndereco','endereco'],['editCidade','cidade'],['editEstado','estado'],['editTelefone','telefone'],['editHorario','horario'],['editUsuario','usuario'],['editLimiteDiario','limiteDiario'] ].forEach(([a,b])=>$(a).value=u[b]||'');$("editEspecialidades").value=(u.especialidades||[]).join('\n');$("editServicos").value=(u.servicos||[]).join('\n');$("editCampanhas").value=(u.campanhas||[]).join('\n');$("editDocumentos").value=(u.documentos||[]).join('\n');travarLocalizacaoUBS(u);renderFuncionariosAdmin();void atualizarSeloListaEsperaAdmin();}catch(e){toast(e.message);}}
+// Só o desenvolvedor muda cidade/UF de uma UBS já localizada; a Secretaria fica no próprio município.
+function travarLocalizacaoUBS(u){const travar=adminSession?.tipo!=='desenvolvedor'&&!!(String(u?.cidade||'').trim()&&String(u?.estado||'').trim());["editCidade","editEstado"].forEach(id=>{const campo=$(id);if(!campo)return;campo.readOnly=travar;campo.classList.toggle('location-locked',travar);campo.title=travar?'A localização da UBS é definida pela Secretaria/desenvolvedor.':'';});}
 
+function tituloPainelSecretaria(session){const cidade=String(session?.cidade||'').trim(),uf=String(session?.estado||'').trim().toUpperCase();return cidade&&uf?`Secretaria de Saúde — ${cidade}/${uf}`:'Painel da Secretaria de Saúde';}
 async function abrirPainelAdmin(){
     if(!adminSession)return;
     $("adminModal").classList.remove('hidden');
@@ -1560,8 +1597,8 @@ async function abrirPainelAdmin(){
     $("adminArchiveButton")?.classList.toggle('hidden',!globalRole);
     $("adminAddEmployeeButton")?.classList.toggle("hidden", !canManageUBSEmployees());
     $("employeesReadOnlyNotice")?.classList.toggle("hidden", canManageUBSEmployees());
-    $("adminTitulo").textContent=adminSession.tipo==='desenvolvedor'?'Painel do Desenvolvedor':adminSession.tipo==='secretaria'?'Painel da Secretaria de Saúde':'Painel '+(getUBS(adminSession.ubsId)?.nome||'UBS');
-    if(globalRole){try{const d=await api('admin_list_ubs');ubsList=d.ubs||[];preencherSelectAdmin();}catch(e){toast(e.message);}}
+    $("adminTitulo").textContent=adminSession.tipo==='desenvolvedor'?'Painel do Desenvolvedor':adminSession.tipo==='secretaria'?tituloPainelSecretaria(adminSession):'Painel '+(getUBS(adminSession.ubsId)?.nome||'UBS');
+    if(globalRole){try{const d=await api('admin_list_ubs');ubsList=d.ubs||[];preencherSelectAdmin();if(adminSession.tipo==='secretaria'&&d.regiao){adminSession.cidade=d.regiao.cidade;adminSession.estado=d.regiao.estado;$("adminTitulo").textContent=tituloPainelSecretaria(adminSession);}}catch(e){toast(e.message);}}
     const firstActive=ubsList.find(u=>u.ativa!==false)?.id||ubsList[0]?.id||'';
     const id=globalRole?firstActive:adminSession.ubsId;
     if(id){$("adminUBSSelect").value=id;await carregarDadosAdmin(id);}
@@ -1735,6 +1772,7 @@ async function carregarPainelSecretaria(){
 }
 function renderPainelSecretaria(data){
     const total=(data.consultasHoje||[]).reduce((n,u)=>n+Number(u.consultas||0),0),active=(data.ubs||[]).filter(u=>u.ativa!==false).length,inds=data.indicadores||[];
+    const subtitulo=$("secDashboardSubtitle");if(subtitulo)subtitulo.textContent=data.regiao?`Indicadores agregados das unidades ativas de ${data.regiao.cidade}/${data.regiao.estado}.`:'Indicadores agregados de todas as unidades ativas.';
     if($("secConsultasHoje"))$("secConsultasHoje").textContent=total;if($("secUnidadesAtivas"))$("secUnidadesAtivas").textContent=active;if($("secIndicadoresAtivos"))$("secIndicadoresAtivos").textContent=inds.length;
     const chart=$("secAppointmentsChart"),max=Math.max(1,...(data.consultasHoje||[]).map(u=>Number(u.consultas||0)));
     if(chart)chart.innerHTML=(data.consultasHoje||[]).map(u=>`<div class="secretaria-chart-row"><span>${escapeHTML(u.unidade)}</span><div class="secretaria-bar-track"><i style="width:${Math.round(Number(u.consultas||0)/max*100)}%"></i></div><b>${Number(u.consultas||0)}</b></div>`).join('')||'<p>Nenhuma unidade ativa.</p>';
@@ -1758,9 +1796,15 @@ async function alternarUBSAtiva(){const unit=UBSAdminAtual();if(!unit)return;con
    SALVAR INFORMAÇÕES UBS
    ============================================================ */
 
-async function carregarListaEsperaUBS(){const box=$("listaEsperaUBS");if(!box||!adminSession)return;try{const d=await api('admin_waitlist',{params:{ubs_id:adminSession.tipo==='ubs'?adminSession.ubsId:$('adminUBSSelect').value}});box.innerHTML=(d.waitlist||[]).length?(d.waitlist||[]).map(w=>`<article class="admin-appointment"><strong>${escapeHTML(w.codigo||'PAC')} — ${escapeHTML(w.nome)}</strong><p>${escapeHTML(w.especialidade)} • ${formatarDataBR(w.data)}</p><small>Entrada: ${escapeHTML(w.criadoEm||'')}</small><div class="appointment-actions"><button class="btn primary" type="button" onclick="adicionarPacienteFilaPrincipal(${Number(w.id)})">Adicionar à fila principal</button></div></article>`).join(''):'<div class="info-box">Nenhum paciente aguardando.</div>';}catch(e){box.innerHTML='<div class="info-box">'+escapeHTML(e.message)+'</div>';}}
+function ubsIdAdminAtual(){return adminSession?.tipo==='ubs'?adminSession.ubsId:$("adminUBSSelect")?.value;}
+function atualizarSeloListaEspera(total){const badge=$("waitlistNoticeBadge");if(!badge)return;badge.textContent=total>0?String(total):"";badge.classList.toggle("hidden",!(total>0));}
+function textoVagasLivres(vagas){return vagas>0?`${vagas} vaga${vagas>1?'s':''} livre${vagas>1?'s':''} nesta data`:"Sem vagas livres nesta data";}
+async function carregarListaEsperaUBS(){const box=$("listaEsperaUBS");const ubsId=ubsIdAdminAtual();if(!box||!adminSession||!ubsId)return;try{const d=await api('admin_waitlist',{params:{ubs_id:ubsId}});const avisos=d.avisosPendentes||[];atualizarSeloListaEspera(avisos.length);$("avisosListaEsperaBox")?.classList.toggle("hidden",avisos.length===0);const avisosBox=$("avisosListaEspera");if(avisosBox)avisosBox.innerHTML=avisos.map(a=>`<article class="admin-appointment"><strong>${escapeHTML(a.codigo||'PAC')} — ${escapeHTML(a.nome)}</strong><p>${escapeHTML(a.especialidade)} • ${formatarDataBR(a.data)} • posição ${Number(a.fila)||'-'} na fila</p><small>Protocolo: ${escapeHTML(a.consultaId||'')}${a.telefone?'':' • sem telefone cadastrado'}</small><div class="appointment-actions"><button class="btn primary" type="button" onclick="avisarPacienteListaEspera(${Number(a.id)})">${a.telefone?'Avisar pelo WhatsApp':'Marcar como avisado'}</button></div></article>`).join('');const pendentes=d.waitlist||[];box.innerHTML=pendentes.length?pendentes.map(w=>{const vagas=Number(w.vagasLivres)||0;return `<article class="admin-appointment"><strong>${escapeHTML(w.codigo||'PAC')} — ${escapeHTML(w.nome)}</strong><p>${escapeHTML(w.especialidade)} • ${formatarDataBR(w.data)}</p><small>Entrada: ${escapeHTML(w.criadoEm||'')}</small><br><span class="waitlist-slot${vagas>0?'':' is-full'}">${textoVagasLivres(vagas)}</span><div class="appointment-actions"><button class="btn ${vagas>0?'primary':'secondary'}" type="button" onclick="adicionarPacienteFilaPrincipal(${Number(w.id)})">${vagas>0?'Encaixar na vaga e avisar':'Adicionar à fila principal (encaixe extra)'}</button></div></article>`;}).join(''):'<div class="info-box">Nenhum paciente aguardando.</div>';}catch(e){box.innerHTML='<div class="info-box">'+escapeHTML(e.message)+'</div>';}}
+async function atualizarSeloListaEsperaAdmin(){const ubsId=ubsIdAdminAtual();if(!adminSession||!ubsId)return;try{const d=await api('admin_waitlist',{params:{ubs_id:ubsId}});atualizarSeloListaEspera((d.avisosPendentes||[]).length);}catch(_e){}}
+async function avisarPacienteListaEspera(waitlistId){const ubsId=ubsIdAdminAtual();if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_notify_waitlist',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');}else if(whatsappWindow)whatsappWindow.close();toast(d.message||'Aviso registrado.');await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
+function avisoVagaRepassada(resposta){return resposta?.vagaRepassada?` A vaga foi repassada a ${resposta.listaEspera?.nome||'um paciente'} da lista de espera — avise-o na aba "Lista de espera".`:'';}
 
-async function adicionarPacienteFilaPrincipal(waitlistId){if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!adminSession)return;if(!confirm('Adicionar este paciente à fila principal? Ele receberá uma notificação e o WhatsApp será aberto com a mensagem preenchida.'))return;const ubsId=adminSession.tipo==='ubs'?adminSession.ubsId:$("adminUBSSelect")?.value;if(!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_add_waitlist_to_queue',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');toast('Paciente adicionado. O WhatsApp foi aberto com a mensagem preenchida; toque em Enviar.');}else{if(whatsappWindow)whatsappWindow.close();toast('Paciente adicionado e notificado no sistema, mas não possui telefone cadastrado.');}await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
+async function adicionarPacienteFilaPrincipal(waitlistId){if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!adminSession)return;if(!confirm('Adicionar este paciente à fila principal? Ele receberá uma notificação e o WhatsApp será aberto com a mensagem preenchida.'))return;const ubsId=ubsIdAdminAtual();if(!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_add_waitlist_to_queue',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');toast('Paciente adicionado. O WhatsApp foi aberto com a mensagem preenchida; toque em Enviar.');}else{if(whatsappWindow)whatsappWindow.close();toast('Paciente adicionado e notificado no sistema, mas não possui telefone cadastrado.');}await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
 async function salvarCampanhasEventos() {
     const ubs = UBSAdminAtual();
     const button = $("saveCampaignsEventsButton");
@@ -2428,9 +2472,10 @@ async function renderConsultasAdmin() {
 
 async function atualizarStatusConsultaAdmin(id, status) {
     try {
-        await api("admin_update_appointment_status", {method:"POST", body:{id,status}});
+        const resposta = await api("admin_update_appointment_status", {method:"POST", body:{id,status}});
         await renderConsultasAdmin();
-        toast(status === "atendido" ? "Consulta marcada como realizada." : "Status atualizado.");
+        toast((status === "atendido" ? "Consulta marcada como realizada." : "Status atualizado.") + avisoVagaRepassada(resposta));
+        if (resposta?.vagaRepassada) await atualizarSeloListaEsperaAdmin();
     } catch(error) { toast(error.message); }
 }
 
@@ -2451,7 +2496,7 @@ async function cancelarConsultaAdmin(id) {
 
     try {
 
-        await api(
+        const resposta = await api(
             "cancel_appointment",
             {
                 method: "POST",
@@ -2462,8 +2507,9 @@ async function cancelarConsultaAdmin(id) {
         await renderConsultasAdmin();
 
         toast(
-            "Consulta cancelada pelo administrador."
+            "Consulta cancelada pelo administrador." + avisoVagaRepassada(resposta)
         );
+        if (resposta?.vagaRepassada) await atualizarSeloListaEsperaAdmin();
 
     } catch (error) {
 

@@ -16,7 +16,7 @@ Para evitar cobranças, mantenha o limite de gastos do Starter em `US$ 0`. Ao at
 
 O banco ainda precisa do esquema inicial. `database.sql` começa com `DROP DATABASE`; execute-o somente em uma instalação nova e vazia, nunca sobre uma base que já contenha dados. As migrações compatíveis restantes são executadas pela aplicação após a primeira conexão.
 
-Em instalações existentes com Supabase/PostgreSQL, aplique manualmente no SQL Editor as migrações necessárias de `migrations/`; para o filtro de UBS por localização, execute `migrations/20261009_ubs_location.sql` antes de publicar o código. O bootstrap da aplicação não executa DDL no PostgreSQL.
+Em instalações existentes com Supabase/PostgreSQL, aplique manualmente no SQL Editor as migrações necessárias de `migrations/`; para o filtro de UBS por localização, execute `migrations/20261009_ubs_location.sql` e `migrations/20261010_secretaria_location.sql`, e para os avisos da lista de espera execute `migrations/20261012_waitlist_ubs_notice.sql` antes de publicar o código. O bootstrap da aplicação não executa DDL no PostgreSQL.
 
 Como este sistema pode armazenar informações de saúde, use dados fictícios no plano gratuito até avaliar requisitos de privacidade, backups e disponibilidade para o uso pretendido.
 
@@ -80,3 +80,11 @@ A aba de assinatura está em modo demonstração e não cria cobrança real no A
 No XAMPP/Apache, as rotas são tratadas pelo `.htaccess`; na Vercel, estão declaradas em `vercel.json`. A home `/` continua disponível como seletor.
 
 Usuários UBS visualizam a equipe em modo somente leitura. Somente Secretaria e desenvolvedor podem criar, editar ou excluir funcionários; a API valida essa permissão além de ocultar os controles na interface.
+
+## Secretarias municipais e lista de espera
+
+- **Uma Secretaria por município:** o desenvolvedor cria cada conta (ex.: Secretaria de Saúde de Serra/ES) já com UF e cidade. A Secretaria só vê, edita, arquiva e acompanha indicadores das UBS da sua cidade, e toda UBS que ela cria nasce nessa cidade/UF. Contas antigas sem cidade continuam com visão global até receberem localização (o que acontece ao criarem a primeira UBS).
+- **Localização das UBS:** só o desenvolvedor altera cidade/UF de uma UBS já localizada. A grafia da cidade é padronizada com a já cadastrada ("serra" vira "Serra"), evitando opções duplicadas no login.
+- **Login do paciente:** Estado → Cidade → UBS. Quando há uma única opção ela é selecionada automaticamente, e o navegador lembra o último estado/cidade escolhidos.
+- **Lista de espera:** quando uma consulta é cancelada — pelo paciente ou pela UBS — o primeiro da fila recebe a vaga automaticamente. Na aba **Lista de espera**, a UBS vê esses pacientes em "Vagas repassadas — avise o paciente" (com selo na aba) e envia o aviso pelo WhatsApp; o aviso fica registrado nas notificações do paciente. Cada paciente aguardando mostra quantas vagas livres existem na data, para a UBS encaixar quando houver.
+

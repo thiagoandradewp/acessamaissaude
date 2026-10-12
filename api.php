@@ -245,6 +245,7 @@ try {
 
         case 'admin_waitlist': admin_waitlist($pdo); break;
         case 'admin_add_waitlist_to_queue': admin_add_waitlist_to_queue($pdo, body_json()); break;
+        case 'admin_notify_waitlist': admin_notify_waitlist($pdo, body_json()); break;
         case 'admin_appointments':
             admin_appointments($pdo);
             break;
@@ -298,6 +299,12 @@ function all_ubs(PDO $pdo, bool $admin): array
     }
 
     return $result;
+}
+
+function ubs_da_regiao(array $unidades, ?array $region): array
+{
+    if ($region === null) return $unidades;
+    return array_values(array_filter($unidades, static fn(array $ubs): bool => ubs_pertence_regiao($ubs, $region)));
 }
 
 function get_ubs(PDO $pdo, string $id, bool $admin = false): array
@@ -859,6 +866,7 @@ function join_waitlist(PDO $pdo, array $data): never
 }
 
 function promote_ubs_waitlist(PDO $pdo,string $ubsId,string $especialidade,string $date): ?array {
+    if($date<date('Y-m-d'))return null;
     $limQ=$pdo->prepare('SELECT limite_diario,nome FROM ubs WHERE id=?');$limQ->execute([$ubsId]);$unit=$limQ->fetch();if(!$unit)return null;$limite=max(1,(int)$unit['limite_diario']);
     $pdo->beginTransaction(); try {
         $count=$pdo->prepare('SELECT COUNT(*) FROM consultas WHERE ubs_id=? AND especialidade=? AND data_consulta=? AND status="agendado"');$count->execute([$ubsId,$especialidade,$date]);$ocupadas=(int)$count->fetchColumn();if($ocupadas>=$limite){$pdo->rollBack();return null;}
@@ -867,9 +875,9 @@ function promote_ubs_waitlist(PDO $pdo,string $ubsId,string $especialidade,strin
         $id='CONS-'.date('YmdHis').'-'.strtoupper(bin2hex(random_bytes(3)));$fila=$ocupadas+1;
         $ins=$pdo->prepare('INSERT INTO consultas (id,ubs_id,paciente_id,especialidade,assunto,data_consulta,horario,fila,status) VALUES (?,?,?,?,?,? ,"00:00:00",?,"agendado")');$ins->execute([$id,$ubsId,$row['paciente_id'],$especialidade,'Agendamento automático pela lista de espera',$date,$fila]);
         $pdo->prepare('UPDATE lista_espera SET status="agendado",consulta_id=? WHERE id=?')->execute([$id,$row['id']]);
-        $msg="Olá, {$row['nome']}! Uma vaga ficou disponível na {$unit['nome']}. Sua consulta foi agendada automaticamente para {$date} e está confirmada. Protocolo: {$id}.";
+        $msg="Olá, {$row['nome']}! Uma vaga ficou disponível na {$unit['nome']}. Sua consulta de {$especialidade} foi agendada automaticamente para ".date('d/m/Y',strtotime($date))." e está confirmada. Posição na fila: {$fila}. Protocolo: {$id}.";
         $pdo->prepare('INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,status) VALUES (?,? ,"push","lista_espera_agendada",?,NOW(),"pendente")')->execute([$row['paciente_id'],$id,$msg]);
-        $pdo->commit(); return ['id'=>$id,'patientId'=>(int)$row['paciente_id'],'nome'=>$row['nome']];
+        $pdo->commit(); audit_event($pdo,'lista_espera_vaga_repassada','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>(int)$row['id']]); return ['id'=>$id,'patientId'=>(int)$row['paciente_id'],'nome'=>$row['nome']];
     } catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
 }
 function get_occupied_slots(PDO $pdo,string $ubsId,string $especialidade,string $date): never
@@ -938,7 +946,7 @@ function cancel_appointment(PDO $pdo, array $data): never
     $session = admin_session();
 
     $stmt = $pdo->prepare(
-        'SELECT c.id, c.ubs_id, p.sus, c.status
+        'SELECT c.id, c.ubs_id, c.especialidade, c.data_consulta, p.sus, c.status
          FROM consultas c
          INNER JOIN pacientes p ON p.id = c.paciente_id
          WHERE c.id = ?'
@@ -983,6 +991,9 @@ function cancel_appointment(PDO $pdo, array $data): never
                 'message' => 'Você não tem permissão para cancelar esta consulta.'
             ], 403);
         }
+        if ($session['tipo'] === 'secretaria') {
+            assert_ubs_in_admin_region($pdo, $session, (string)$appointment['ubs_id']);
+        }
     }
 
     if ($appointment['status'] === 'cancelado') {
@@ -997,9 +1008,14 @@ function cancel_appointment(PDO $pdo, array $data): never
     audit_event($pdo, 'consulta_cancelada', 'consultas', $id, ['motivo'=>$motivo]);
     $pdo->prepare('UPDATE notificacoes SET status = "erro" WHERE consulta_id = ? AND status = "pendente"')->execute([$id]);
 
-    json_response([
-        'success' => true
-    ]);
+    // A vaga liberada vai para o primeiro da lista de espera; a UBS é avisada na aba "Lista de espera".
+    $promovido = $appointment['status'] === 'agendado'
+        ? promote_ubs_waitlist($pdo, (string)$appointment['ubs_id'], (string)$appointment['especialidade'], (string)$appointment['data_consulta'])
+        : null;
+
+    $response = ['success' => true, 'vagaRepassada' => $promovido !== null];
+    if ($session && $promovido !== null) $response['listaEspera'] = ['nome' => $promovido['nome'], 'consultaId' => $promovido['id']];
+    json_response($response);
 }
 
 function set_reminder(PDO $pdo, array $data): never
@@ -1076,10 +1092,10 @@ function admin_update_appointment_status(PDO $pdo, array $data): never
     $stmt = $pdo->prepare('SELECT ubs_id,especialidade,data_consulta,status FROM consultas WHERE id=?');$stmt->execute([$id]);$before=$stmt->fetch();
     $stmt = $pdo->prepare('UPDATE consultas SET status = ? WHERE id = ?');
     $stmt->execute([$status, $id]);
-    if($status==='cancelado' && $before && $before['status']==='agendado') promote_ubs_waitlist($pdo,(string)$before['ubs_id'],(string)$before['especialidade'],(string)$before['data_consulta']);
+    $promovido = ($status==='cancelado' && $before && $before['status']==='agendado') ? promote_ubs_waitlist($pdo,(string)$before['ubs_id'],(string)$before['especialidade'],(string)$before['data_consulta']) : null;
     audit_event($pdo, 'consulta_status_atualizado', 'consultas', $id, ['status'=>$status]);
 
-    json_response(['success' => true]);
+    json_response(['success' => true, 'vagaRepassada' => $promovido !== null, 'listaEspera' => $promovido ? ['nome'=>$promovido['nome'],'consultaId'=>$promovido['id']] : null]);
 }
 
 function admin_save_exam(PDO $pdo, array $data): never
@@ -1192,6 +1208,8 @@ function download_exam(PDO $pdo): never
         }
     } elseif (!in_array($session['tipo'], ['desenvolvedor','secretaria'], true) && $session['ubs_id'] !== $exam['ubs_id']) {
         json_response(['success' => false, 'message' => 'Você não tem permissão para abrir este anexo.'], 403);
+    } elseif ($session['tipo'] === 'secretaria') {
+        assert_ubs_in_admin_region($pdo, $session, (string)$exam['ubs_id']);
     }
 
     $path = __DIR__ . '/uploads/exames/' . basename((string)$exam['anexo_arquivo']);
@@ -1354,9 +1372,10 @@ function require_secretaria_manager(PDO $pdo): array
 function secretaria_dashboard(PDO $pdo): never
 {
     $session=require_admin();if($session['tipo']!=='secretaria')json_response(['success'=>false,'message'=>'Acesso reservado ao administrador da Secretaria de Saúde.'],403);
-    $today=date('Y-m-d');$q=$pdo->prepare('SELECT u.id AS ubsId,u.nome AS unidade,COUNT(c.id) AS consultas FROM ubs u LEFT JOIN consultas c ON c.ubs_id=u.id AND c.data_consulta=? AND c.status="agendado" WHERE u.ativa=1 GROUP BY u.id,u.nome ORDER BY u.nome');$q->execute([$today]);$appointments=$q->fetchAll();
+    $region=admin_region($pdo,$session);$units=ubs_da_regiao(all_ubs($pdo,true),$region);$unitIds=array_flip(array_map('strval',array_column($units,'id')));$inRegion=static fn(array $row): bool=>isset($unitIds[(string)($row['ubsId'] ?? $row['ubsid'] ?? '')]);
+    $today=date('Y-m-d');$q=$pdo->prepare('SELECT u.id AS ubsId,u.nome AS unidade,COUNT(c.id) AS consultas FROM ubs u LEFT JOIN consultas c ON c.ubs_id=u.id AND c.data_consulta=? AND c.status="agendado" WHERE u.ativa=1 GROUP BY u.id,u.nome ORDER BY u.nome');$q->execute([$today]);$appointments=array_values(array_filter($q->fetchAll(),$inRegion));
     $q=$pdo->prepare('SELECT i.id,i.ubs_id AS ubsId,u.nome AS unidade,i.tipo,i.nome,i.meta,i.realizado,DATE_FORMAT(i.periodo_inicio,"%Y-%m-%d") AS periodoInicio,DATE_FORMAT(i.periodo_fim,"%Y-%m-%d") AS periodoFim FROM indicadores_saude i INNER JOIN ubs u ON u.id=i.ubs_id WHERE u.ativa=1 AND (i.periodo_fim IS NULL OR i.periodo_fim>=?) ORDER BY FIELD(i.tipo,"campanha","vacina","citologia"),u.nome,i.nome');$q->execute([$today]);
-    json_response(['success'=>true,'data'=>['data'=>$today,'consultasHoje'=>$appointments,'indicadores'=>$q->fetchAll(),'ubs'=>all_ubs($pdo,true)]]);
+    json_response(['success'=>true,'data'=>['data'=>$today,'consultasHoje'=>$appointments,'indicadores'=>array_values(array_filter($q->fetchAll(),$inRegion)),'ubs'=>$units,'regiao'=>$region]]);
 }
 function save_health_indicator(PDO $pdo,array $data): never
 {
@@ -1365,22 +1384,24 @@ function save_health_indicator(PDO $pdo,array $data): never
     foreach(['periodo_inicio'=>$start,'periodo_fim'=>$end] as $field=>$value)if($value!==''&&!valid_date($value))json_response(['success'=>false,'message'=>'Data inválida em '.$field.'.'],422);
     if($start!==''&&$end!==''&&$end<$start)json_response(['success'=>false,'message'=>'O fim do período deve ser igual ou posterior ao início.'],422);
     $q=$pdo->prepare('SELECT id FROM ubs WHERE id=? AND ativa=1');$q->execute([$ubsId]);if(!$q->fetchColumn())json_response(['success'=>false,'message'=>'Selecione uma UBS ativa.'],422);
-    if($id){$q=$pdo->prepare('SELECT id FROM indicadores_saude WHERE id=?');$q->execute([$id]);if(!$q->fetchColumn())json_response(['success'=>false,'message'=>'Indicador não encontrado.'],404);$q=$pdo->prepare('UPDATE indicadores_saude SET ubs_id=?,tipo=?,nome=?,meta=?,realizado=?,periodo_inicio=?,periodo_fim=? WHERE id=?');$q->execute([$ubsId,$type,$name,$goal,$done,$start?:null,$end?:null,$id]);$action='indicador_saude_atualizado';}
+    assert_ubs_in_admin_region($pdo,$session,$ubsId);
+    if($id){$q=$pdo->prepare('SELECT ubs_id FROM indicadores_saude WHERE id=?');$q->execute([$id]);$currentUbs=$q->fetchColumn();if($currentUbs===false)json_response(['success'=>false,'message'=>'Indicador não encontrado.'],404);assert_ubs_in_admin_region($pdo,$session,(string)$currentUbs);$q=$pdo->prepare('UPDATE indicadores_saude SET ubs_id=?,tipo=?,nome=?,meta=?,realizado=?,periodo_inicio=?,periodo_fim=? WHERE id=?');$q->execute([$ubsId,$type,$name,$goal,$done,$start?:null,$end?:null,$id]);$action='indicador_saude_atualizado';}
     else{$q=$pdo->prepare('INSERT INTO indicadores_saude (ubs_id,tipo,nome,meta,realizado,periodo_inicio,periodo_fim,criado_por) VALUES (?,?,?,?,?,?,?,?)');$q->execute([$ubsId,$type,$name,$goal,$done,$start?:null,$end?:null,$session['id']??null]);$id=(int)$pdo->lastInsertId();$action='indicador_saude_criado';}
     audit_event($pdo,$action,'indicadores_saude',(string)$id,['ubs_id'=>$ubsId,'tipo'=>$type]);json_response(['success'=>true,'id'=>$id,'message'=>'Indicador de saúde salvo.']);
 }
 function delete_health_indicator(PDO $pdo,array $data): never
 {
-    require_secretaria_manager($pdo);$id=(int)($data['id']??0);if($id<1)json_response(['success'=>false,'message'=>'Indicador inválido.'],422);$q=$pdo->prepare('DELETE FROM indicadores_saude WHERE id=?');$q->execute([$id]);if($q->rowCount()<1)json_response(['success'=>false,'message'=>'Indicador não encontrado.'],404);audit_event($pdo,'indicador_saude_removido','indicadores_saude',(string)$id);json_response(['success'=>true,'message'=>'Indicador removido.']);
+    $session=require_secretaria_manager($pdo);$id=(int)($data['id']??0);if($id<1)json_response(['success'=>false,'message'=>'Indicador inválido.'],422);$q=$pdo->prepare('SELECT ubs_id FROM indicadores_saude WHERE id=?');$q->execute([$id]);$currentUbs=$q->fetchColumn();if($currentUbs===false)json_response(['success'=>false,'message'=>'Indicador não encontrado.'],404);assert_ubs_in_admin_region($pdo,$session,(string)$currentUbs);$q=$pdo->prepare('DELETE FROM indicadores_saude WHERE id=?');$q->execute([$id]);if($q->rowCount()<1)json_response(['success'=>false,'message'=>'Indicador não encontrado.'],404);audit_event($pdo,'indicador_saude_removido','indicadores_saude',(string)$id);json_response(['success'=>true,'message'=>'Indicador removido.']);
 }
 function toggle_ubs_active(PDO $pdo,array $data): never
 {
-    $session=require_admin();if(!in_array($session['tipo'],['secretaria','desenvolvedor'],true))json_response(['success'=>false,'message'=>'Apenas a Secretaria de Saúde ou o desenvolvedor pode gerenciar unidades.'],403);$id=required_string($data,'ubs_id');$active=filter_var($data['ativa']??null,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($active===null)json_response(['success'=>false,'message'=>'Estado da UBS inválido.'],422);$q=$pdo->prepare('SELECT nome FROM ubs WHERE id=?');$q->execute([$id]);$name=$q->fetchColumn();if(!$name)json_response(['success'=>false,'message'=>'UBS não encontrada.'],404);$pdo->prepare('UPDATE ubs SET ativa=? WHERE id=?')->execute([$active,$id]);audit_event($pdo,$active?'ubs_reativada':'ubs_arquivada','ubs',$id,['nome'=>$name]);json_response(['success'=>true,'message'=>$active?'UBS reativada.':'UBS desativada e arquivada; os dados históricos foram preservados.','ubs'=>get_ubs($pdo,$id,true)]);
+    $session=require_admin();if(!in_array($session['tipo'],['secretaria','desenvolvedor'],true))json_response(['success'=>false,'message'=>'Apenas a Secretaria de Saúde ou o desenvolvedor pode gerenciar unidades.'],403);$id=required_string($data,'ubs_id');$active=filter_var($data['ativa']??null,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($active===null)json_response(['success'=>false,'message'=>'Estado da UBS inválido.'],422);assert_ubs_in_admin_region($pdo,$session,$id);$q=$pdo->prepare('SELECT nome FROM ubs WHERE id=?');$q->execute([$id]);$name=$q->fetchColumn();if(!$name)json_response(['success'=>false,'message'=>'UBS não encontrada.'],404);$pdo->prepare('UPDATE ubs SET ativa=? WHERE id=?')->execute([$active,$id]);audit_event($pdo,$active?'ubs_reativada':'ubs_arquivada','ubs',$id,['nome'=>$name]);json_response(['success'=>true,'message'=>$active?'UBS reativada.':'UBS desativada e arquivada; os dados históricos foram preservados.','ubs'=>get_ubs($pdo,$id,true)]);
 }
 function list_admin_ubs(PDO $pdo): never
 {
     $session=require_admin();if(!in_array($session['tipo'],['desenvolvedor','secretaria'],true))json_response(['success'=>false,'message'=>'Acesso reservado à gestão global.'],403);
-    json_response(['success'=>true,'ubs'=>all_ubs($pdo,true)]);
+    $region=admin_region($pdo,$session);
+    json_response(['success'=>true,'ubs'=>ubs_da_regiao(all_ubs($pdo,true),$region),'regiao'=>$region]);
 }
 function list_secretaria_accounts(PDO $pdo): never
 {
@@ -1388,7 +1409,7 @@ function list_secretaria_accounts(PDO $pdo): never
 }
 function create_secretaria_account(PDO $pdo,array $data): never
 {
-    $session=require_admin();if($session['tipo']!=='desenvolvedor')json_response(['success'=>false,'message'=>'Somente o desenvolvedor pode provisionar o administrador da Secretaria.'],403);$user=required_string($data,'usuario');$password=(string)($data['senha']??'');$location=validar_localizacao_ubs($data);
+    $session=require_admin();if($session['tipo']!=='desenvolvedor')json_response(['success'=>false,'message'=>'Somente o desenvolvedor pode provisionar o administrador da Secretaria.'],403);$user=required_string($data,'usuario');$password=(string)($data['senha']??'');$location=localizacao_canonica($pdo,validar_localizacao_ubs($data));
     if(!preg_match('/^[A-Za-z0-9._@-]{3,80}$/',$user))json_response(['success'=>false,'message'=>'Use um usuário de 3 a 80 caracteres: letras, números, ponto, hífen, sublinhado ou @.'],422);if(strlen($password)<12||strlen($password)>200)json_response(['success'=>false,'message'=>'A senha precisa ter entre 12 e 200 caracteres.'],422);
     try{$q=$pdo->prepare("INSERT INTO administradores (usuario,senha_hash,tipo,ubs_id,cidade,estado) VALUES (?,?,'secretaria',NULL,?,?)");$q->execute([$user,password_hash($password,PASSWORD_DEFAULT),$location['cidade'],$location['estado']]);$id=(int)$pdo->lastInsertId();}catch(PDOException $e){if(database_is_unique_violation($e))json_response(['success'=>false,'message'=>'Esse usuário já está cadastrado.'],409);throw $e;}
     audit_event($pdo,'administrador_secretaria_criado','administradores',(string)$id,['usuario'=>$user,'cidade'=>$location['cidade'],'estado'=>$location['estado']]);json_response(['success'=>true,'message'=>'Conta da Secretaria criada com cidade e UF. As novas UBS herdarão essa localização.','account'=>['id'=>$id,'usuario'=>$user,'cidade'=>$location['cidade'],'estado'=>$location['estado']]]);
@@ -1467,7 +1488,33 @@ function validar_localizacao_ubs(array $data): array
     if (preg_match('/^.{2,120}$/uD', $cidade) !== 1 || !in_array($estado, $ufs, true)) {
         json_response(['success'=>false,'message'=>'Informe uma cidade e uma sigla de UF válida.'],422);
     }
-    return ['cidade'=>$cidade,'estado'=>$estado];
+    return ['cidade'=>normalizar_nome_cidade($cidade),'estado'=>$estado];
+}
+
+// Reaproveita a grafia já cadastrada da cidade (ex.: "serra" vira "Serra") para não duplicar opções no login.
+function localizacao_canonica(PDO $pdo, array $location): array
+{
+    $q = $pdo->prepare("SELECT cidade FROM ubs WHERE estado = ? AND cidade <> '' UNION SELECT cidade FROM administradores WHERE tipo = 'secretaria' AND estado = ? AND cidade <> ''");
+    $q->execute([$location['estado'], $location['estado']]);
+    $key = chave_cidade($location['cidade']);
+    foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $existing) {
+        if (chave_cidade((string)$existing) === $key) return ['cidade'=>normalizar_nome_cidade((string)$existing),'estado'=>$location['estado']];
+    }
+    return $location;
+}
+
+// Desenvolvedor define livremente; Secretaria com município fica restrita a ele; demais perfis não mudam uma localização já definida.
+function localizacao_para_ubs(PDO $pdo, array $session, string $ubsId, array $data): array
+{
+    if ($session['tipo'] !== 'desenvolvedor') {
+        $region = admin_region($pdo, $session);
+        if ($region !== null) return $region;
+        $q = $pdo->prepare('SELECT cidade, estado FROM ubs WHERE id = ?');
+        $q->execute([$ubsId]);
+        $current = admin_region_from_row($q->fetch(PDO::FETCH_ASSOC) ?: null);
+        if ($current !== null) return $current;
+    }
+    return localizacao_canonica($pdo, validar_localizacao_ubs($data));
 }
 
 function create_ubs(PDO $pdo,array $data): never
@@ -1486,11 +1533,11 @@ function create_ubs(PDO $pdo,array $data): never
         if (trim((string)$secretariaLocation['cidade']) !== '' && trim((string)$secretariaLocation['estado']) !== '') {
             $location = validar_localizacao_ubs($secretariaLocation);
         } else {
-            $location = validar_localizacao_ubs($data);
+            $location = localizacao_canonica($pdo, validar_localizacao_ubs($data));
             $secretariaNeedsLocationSave = true;
         }
     } else {
-        $location = validar_localizacao_ubs($data);
+        $location = localizacao_canonica($pdo, validar_localizacao_ubs($data));
     }
     $telefone = required_string($data, 'telefone');
     $horario = required_string($data, 'horario');
@@ -1640,11 +1687,11 @@ function update_ubs(PDO $pdo, array $data): never
 {
     $ubsId = required_string($data, 'ubs_id');
 
-    authorize_ubs($ubsId);
+    $session = authorize_ubs($ubsId);
 
     $nome = required_string($data, 'nome');
     $endereco = required_string($data, 'endereco');
-    $location = validar_localizacao_ubs($data);
+    $location = localizacao_para_ubs($pdo, $session, $ubsId, $data);
     $telefone = required_string($data, 'telefone');
     $horario = required_string($data, 'horario');
     $usuario = required_string($data, 'usuario');
@@ -1989,7 +2036,33 @@ function delete_employee(PDO $pdo, array $data): never
 function admin_waitlist(PDO $pdo): never {
     $ubsId=trim((string)($_GET['ubs_id']??'')); $especialidade=trim((string)($_GET['especialidade']??'')); $date=trim((string)($_GET['data']??'')); authorize_ubs($ubsId);
     $sql='SELECT l.id,l.data_consulta AS data,l.especialidade,l.criado_em AS criadoEm,p.codigo,p.nome,p.telefone FROM lista_espera l INNER JOIN pacientes p ON p.id=l.paciente_id WHERE l.ubs_id=? AND l.status="pendente"';$params=[$ubsId];
-    if($especialidade!==''){$sql.=' AND l.especialidade=?';$params[]=$especialidade;} if($date!==''){$sql.=' AND l.data_consulta=?';$params[]=$date;}$sql.=' ORDER BY l.data_consulta,l.especialidade,l.id';$q=$pdo->prepare($sql);$q->execute($params);json_response(['success'=>true,'waitlist'=>$q->fetchAll()]);
+    if($especialidade!==''){$sql.=' AND l.especialidade=?';$params[]=$especialidade;} if($date!==''){$sql.=' AND l.data_consulta=?';$params[]=$date;}$sql.=' ORDER BY l.data_consulta,l.especialidade,l.id';$q=$pdo->prepare($sql);$q->execute($params);$rows=$q->fetchAll();
+    // Vagas livres por especialidade/data: indicam à UBS quando vale encaixar alguém da lista.
+    $q=$pdo->prepare('SELECT limite_diario FROM ubs WHERE id=?');$q->execute([$ubsId]);$limite=max(1,(int)$q->fetchColumn());
+    $count=$pdo->prepare("SELECT COUNT(*) FROM consultas WHERE ubs_id=? AND especialidade=? AND data_consulta=? AND status='agendado'");$vagas=[];
+    foreach($rows as &$row){$key=$row['especialidade'].'|'.$row['data'];if(!isset($vagas[$key])){$count->execute([$ubsId,$row['especialidade'],$row['data']]);$vagas[$key]=max(0,$limite-(int)$count->fetchColumn());}$row['vagasLivres']=$vagas[$key];}
+    unset($row);
+    $q=$pdo->prepare("SELECT l.id,l.consulta_id,l.data_consulta,l.especialidade,c.fila,p.codigo,p.nome,p.telefone FROM lista_espera l INNER JOIN consultas c ON c.id=l.consulta_id INNER JOIN pacientes p ON p.id=l.paciente_id WHERE l.ubs_id=? AND l.status='agendado' AND l.aviso_enviado_em IS NULL AND c.status='agendado' AND l.data_consulta>=? ORDER BY l.data_consulta,l.id");
+    $q->execute([$ubsId,date('Y-m-d')]);
+    $avisos=array_map(static fn(array $a): array=>['id'=>(int)$a['id'],'consultaId'=>$a['consulta_id'],'data'=>$a['data_consulta'],'especialidade'=>$a['especialidade'],'fila'=>(int)$a['fila'],'codigo'=>$a['codigo'],'nome'=>$a['nome'],'telefone'=>$a['telefone']],$q->fetchAll());
+    json_response(['success'=>true,'waitlist'=>$rows,'avisosPendentes'=>$avisos]);
+}
+function whatsapp_url(?string $telefone, string $mensagem): ?string {
+    $phone=preg_replace('/\D+/','',(string)$telefone);if($phone==='')return null;
+    $waPhone=str_starts_with($phone,'55')&&strlen($phone)>=12?$phone:'55'.$phone;
+    return 'https://wa.me/'.$waPhone.'?text='.rawurlencode($mensagem);
+}
+function admin_notify_waitlist(PDO $pdo,array $data): never {
+    $ubsId=required_string($data,'ubs_id');$waitlistId=(int)($data['waitlist_id']??0);if($waitlistId<1)json_response(['success'=>false,'message'=>'Paciente da lista de espera não informado.'],422);authorize_ubs($ubsId);
+    $q=$pdo->prepare("SELECT l.id,l.consulta_id,l.especialidade,l.data_consulta,c.fila,p.nome,p.telefone,u.nome AS ubs_nome FROM lista_espera l INNER JOIN consultas c ON c.id=l.consulta_id INNER JOIN pacientes p ON p.id=l.paciente_id INNER JOIN ubs u ON u.id=l.ubs_id WHERE l.id=? AND l.ubs_id=? AND l.status='agendado' AND c.status='agendado'");
+    $q->execute([$waitlistId,$ubsId]);$row=$q->fetch();
+    if(!$row)json_response(['success'=>false,'message'=>'Este agendamento da lista de espera não está mais ativo. Atualize a lista.'],409);
+    $msg="Olá, {$row['nome']}! Aqui é a {$row['ubs_nome']}. Uma vaga foi liberada e você saiu da lista de espera: sua consulta de {$row['especialidade']} está confirmada para ".date('d/m/Y',strtotime((string)$row['data_consulta'])).". Posição na fila: {$row['fila']}. Protocolo: {$row['consulta_id']}. Se não puder comparecer, cancele pelo Acessa+ Saúde para liberar a vaga.";
+    $pdo->prepare("INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,enviada_em,status) SELECT paciente_id,consulta_id,'whatsapp','lista_espera_aviso_ubs',?,NOW(),NOW(),'enviada' FROM lista_espera WHERE id=?")->execute([$msg,$waitlistId]);
+    $pdo->prepare('UPDATE lista_espera SET aviso_enviado_em=NOW() WHERE id=?')->execute([$waitlistId]);
+    audit_event($pdo,'lista_espera_aviso_enviado','lista_espera',(string)$waitlistId,['ubs_id'=>$ubsId,'consulta_id'=>$row['consulta_id']]);
+    $url=whatsapp_url($row['telefone'],$msg);
+    json_response(['success'=>true,'whatsapp_url'=>$url,'message'=>$url?'Aviso registrado. Envie a mensagem no WhatsApp aberto.':'Aviso registrado, mas o paciente não tem telefone cadastrado.']);
 }
 function admin_add_waitlist_to_queue(PDO $pdo,array $data): never {
     $ubsId=required_string($data,'ubs_id');$waitlistId=(int)($data['waitlist_id']??0);if($waitlistId<1)json_response(['success'=>false,'message'=>'Paciente da lista de espera não informado.'],422);authorize_ubs($ubsId);
@@ -1999,9 +2072,9 @@ function admin_add_waitlist_to_queue(PDO $pdo,array $data): never {
         $lock=$pdo->prepare('SELECT nome FROM ubs WHERE id=? FOR UPDATE');$lock->execute([$ubsId]);$unit=$lock->fetch();if(!$unit){$pdo->rollBack();json_response(['success'=>false,'message'=>'UBS não encontrada.'],404);}
         $next=$pdo->prepare('SELECT COALESCE(MAX(fila),0)+1 FROM consultas WHERE ubs_id=? AND especialidade=? AND data_consulta=?');$next->execute([$ubsId,$row['especialidade'],$row['data_consulta']]);$fila=(int)$next->fetchColumn();
         $id='CONS-'.date('YmdHis').'-'.strtoupper(bin2hex(random_bytes(3)));$ins=$pdo->prepare('INSERT INTO consultas (id,ubs_id,paciente_id,especialidade,assunto,data_consulta,horario,fila,status) VALUES (?,?,?,?,?,? ,"00:00:00",?,"agendado")');$ins->execute([$id,$ubsId,$row['paciente_id'],$row['especialidade'],'Encaixe administrativo da lista de espera',$row['data_consulta'],$fila]);
-        $pdo->prepare('UPDATE lista_espera SET status="agendado",consulta_id=? WHERE id=? AND status="pendente"')->execute([$id,$waitlistId]);
+        $pdo->prepare('UPDATE lista_espera SET status="agendado",consulta_id=?,aviso_enviado_em=NOW() WHERE id=? AND status="pendente"')->execute([$id,$waitlistId]);
         $msg="Olá, {$row['nome']}! Você foi encaixado(a) na fila da {$unit['nome']} para {$row['especialidade']} em ".date('d/m/Y',strtotime($row['data_consulta'])).". Sua posição é {$fila}. Protocolo: {$id}.";$pdo->prepare('INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,status) VALUES (?,? ,"push","lista_espera_encaixada",?,NOW(),"pendente")')->execute([$row['paciente_id'],$id,$msg]);
-        $phone=preg_replace('/\D+/','',(string)($row['telefone']??''));$whatsappUrl=null;if($phone!==''){$waPhone=str_starts_with($phone,'55')&&strlen($phone)>=12?$phone:'55'.$phone;$whatsappUrl='https://wa.me/'.$waPhone.'?text='.rawurlencode($msg);}
+        $whatsappUrl=whatsapp_url($row['telefone']??null,$msg);
         $pdo->commit();audit_event($pdo,'paciente_encaixado_lista_espera','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>$waitlistId,'fila'=>$fila]);json_response(['success'=>true,'appointment_id'=>$id,'fila'=>$fila,'whatsapp_url'=>$whatsappUrl,'message'=>'Paciente adicionado à fila principal e notificado no sistema.']);
     }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
 }

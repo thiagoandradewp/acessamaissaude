@@ -119,6 +119,11 @@ function ensure_schema_compatibility(PDO $pdo, string $dbName): void
     $pdo->exec('CREATE TABLE IF NOT EXISTS lista_espera (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, paciente_id INT UNSIGNED NOT NULL, ubs_id VARCHAR(20) NOT NULL, especialidade VARCHAR(120) NOT NULL, data_consulta DATE NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY uq_lista_espera (paciente_id,ubs_id,especialidade,data_consulta)) ENGINE=InnoDB');
     $addColumn('lista_espera', 'status', "ENUM('pendente','agendado','cancelado') NOT NULL DEFAULT 'pendente' AFTER data_consulta");
     $addColumn('lista_espera', 'consulta_id', 'VARCHAR(60) NULL AFTER status');
+    if (!$columnExists('lista_espera', 'aviso_enviado_em')) {
+        $addColumn('lista_espera', 'aviso_enviado_em', 'DATETIME NULL AFTER consulta_id');
+        // Agendamentos anteriores ao aviso manual não devem aparecer como pendentes para a UBS.
+        $pdo->exec("UPDATE lista_espera SET aviso_enviado_em = criado_em WHERE status <> 'pendente'");
+    }
     $pdo->exec('CREATE TABLE IF NOT EXISTS auditoria (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, admin_id INT UNSIGNED NULL, tipo_usuario VARCHAR(30) NULL, acao VARCHAR(100) NOT NULL, entidade VARCHAR(80) NULL, entidade_id VARCHAR(80) NULL, detalhes TEXT NULL, ip VARCHAR(45) NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_auditoria_data (criado_em)) ENGINE=InnoDB');
     $pdo->exec("CREATE TABLE IF NOT EXISTS configuracao_app (id TINYINT UNSIGNED PRIMARY KEY, modo ENUM('ubs','profissional') NOT NULL DEFAULT 'ubs', nome_exibicao VARCHAR(150) NOT NULL DEFAULT 'Acessa+ Saúde', especialidade VARCHAR(150) NULL, registro_profissional VARCHAR(100) NULL, telefone VARCHAR(40) NULL, whatsapp VARCHAR(40) NULL, endereco VARCHAR(255) NULL, modalidade VARCHAR(100) NULL, valor_consulta DECIMAL(10,2) NULL, apresentacao TEXT NULL, logo_arquivo VARCHAR(255) NULL, horario_funcionamento VARCHAR(180) NULL, aviso_publico TEXT NULL, cor_primaria VARCHAR(20) NOT NULL DEFAULT '#0fa7a7', cor_secundaria VARCHAR(20) NOT NULL DEFAULT '#075b5d', atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB");
     $pdo->exec('INSERT IGNORE INTO configuracao_app (id) VALUES (1)');

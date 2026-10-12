@@ -338,9 +338,27 @@ function testPatientUBSLocationFilter() {
   ];
   const found = context.filtrarUBSPorLocalizacao(units, 'PE', 'São João');
   assert.deepEqual(Array.from(found, unit => unit.id), ['1', '2'], 'A UBS deve corresponder exatamente à cidade selecionada e à UF, sem diferença por maiúsculas/minúsculas.');
+  assert.deepEqual(Array.from(context.filtrarUBSPorLocalizacao([{ id: '6', cidade: '  São   João ', estado: 'PE' }], 'PE', 'São João'), unit => unit.id), ['6'], 'Espaços extras não devem esconder a UBS.');
+  assert.deepEqual(Array.from(context.cidadesDoEstado(units, 'PE')), ['Recife', 'São João'], 'Cada cidade deve aparecer uma única vez, mesmo com grafias diferentes.');
+  assert.deepEqual(Array.from(context.cidadesDoEstado(units, 'SP')), [], 'UF sem UBS não deve listar cidades.');
   console.log('Filtro de UBS por cidade e UF: OK');
 }
 testPatientUBSLocationFilter();
+
+function testWaitlistNoticesAndRegionalSecretaria() {
+  assert.match(html, /id="avisosListaEspera"/, 'A aba Lista de espera deve listar as vagas repassadas aguardando aviso.');
+  assert.match(html, /id="waitlistNoticeBadge"/, 'A aba Lista de espera deve exibir um selo com os avisos pendentes.');
+  assert.match(js, /function avisarPacienteListaEspera\(/, 'A UBS deve conseguir avisar o paciente promovido da lista de espera.');
+  assert.match(apiSource, /case 'admin_notify_waitlist'/, 'A API deve expor o aviso da lista de espera.');
+  const cancelStart = apiSource.indexOf('function cancel_appointment(');
+  const cancelEnd = apiSource.indexOf('\nfunction set_reminder(', cancelStart);
+  assert(cancelStart >= 0 && cancelEnd > cancelStart, 'O cancelamento de consultas deve continuar definido.');
+  assert.match(apiSource.slice(cancelStart, cancelEnd), /promote_ubs_waitlist\(/, 'O cancelamento pelo paciente deve repassar a vaga à lista de espera.');
+  assert.match(apiSource, /function list_admin_ubs[\s\S]*?ubs_da_regiao\(/, 'A Secretaria deve listar somente as UBS do seu município.');
+  assert.match(apiSource, /function secretaria_dashboard[\s\S]*?ubs_da_regiao\(/, 'O painel da Secretaria deve agregar somente as UBS do seu município.');
+  console.log('Lista de espera com aviso da UBS e Secretaria por município: OK');
+}
+testWaitlistNoticesAndRegionalSecretaria();
 
 async function runAsyncTests() {
   await testScheduleLoadingStates();
