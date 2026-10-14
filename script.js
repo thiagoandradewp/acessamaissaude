@@ -504,6 +504,7 @@ async function salvarPaciente() {
                     body: {
                         nome,
                         telefone,
+                        email: $("emailPaciente")?.value.trim() || "",
                         sus,
                         ubs_id: ubsId
                     }
@@ -549,6 +550,7 @@ function preencherPerfilPaciente(paciente) {
     const campos = {
         perfilNome: paciente.nome,
         perfilTelefone: paciente.telefone,
+        perfilEmail: paciente.email,
         perfilNascimento: paciente.dataNascimento,
         perfilEndereco: paciente.endereco,
         perfilCondicoes: paciente.condicoesSaude,
@@ -566,6 +568,7 @@ async function salvarPerfilPaciente() {
         sus: paciente.sus,
         nome: $("perfilNome").value.trim(),
         telefone: $("perfilTelefone").value.trim(),
+        email: $("perfilEmail")?.value.trim() || "",
         data_nascimento: $("perfilNascimento").value,
         endereco: $("perfilEndereco").value.trim(),
         condicoes_saude: $("perfilCondicoes").value.trim(),
@@ -1000,9 +1003,7 @@ async function agendarConsulta() {
 
     currentSubject = $("consultaAssunto")?.value.trim() || "";
 
-    let whatsappWindow = null;
     try {
-        whatsappWindow = window.open("about:blank", "_blank");
 
         const data =
             await api(
@@ -1020,7 +1021,6 @@ async function agendarConsulta() {
             );
 
         appointments.push(data.appointment);
-        abrirLembreteWhatsApp(data.appointment, paciente.nome, whatsappWindow);
 
         currentTime = null;
 
@@ -1034,13 +1034,10 @@ async function agendarConsulta() {
 
         atualizarPasso(5);
 
-        toast(
-            "Consulta agendada com sucesso!"
-        );
+        toast(mensagemConfirmacaoAgendamento(data.confirmacao));
 
     } catch (error) {
 
-        if (whatsappWindow) whatsappWindow.close();
         toast(error.message);
 
         await renderHorarios();
@@ -1049,18 +1046,12 @@ async function agendarConsulta() {
 
 }
 
-function abrirLembreteWhatsApp(consulta, nome, janela = null) {
-    const phone = String(consulta?.telefone || '').replace(/\D/g, '');
-    if (!phone) {
-        if (janela) janela.close();
-        return;
-    }
-    const horario = consulta.horario ? ` às ${consulta.horario}` : ` na posição ${Number(consulta.fila || 0)} da fila`;
-    const mensagem = `Olá, ${nome || 'paciente'}! Este é um lembrete da sua consulta na ${consulta.ubsNome || 'UBS'}. Data: ${formatarDataBR(consulta.data)}${horario}. Especialidade: ${consulta.especialidade || 'atendimento'}. Protocolo: ${consulta.id}.`;
-    const telefoneWhatsApp = phone.startsWith('55') && phone.length >= 12 ? phone : `55${phone}`;
-    const url = `https://wa.me/${telefoneWhatsApp}?text=${encodeURIComponent(mensagem)}`;
-    if (janela) janela.location.href = url;
-    else window.open(url, '_blank');
+// A confirmação é enviada pelo sistema ao paciente (e-mail/WhatsApp configurados em Integrações).
+function mensagemConfirmacaoAgendamento(canais) {
+    const nomes = (Array.isArray(canais) ? canais : []).map(canal => canal === "email" ? "e-mail" : "WhatsApp");
+    return nomes.length
+        ? `Consulta agendada! A confirmação foi enviada para o seu ${nomes.join(" e ")}.`
+        : "Consulta agendada com sucesso! A confirmação também fica em Notificações.";
 }
 
 function mostrarComprovante(consulta) {
@@ -1592,6 +1583,7 @@ async function abrirPainelAdmin(){
     $("adminChangePasswordButton")?.classList.toggle('hidden',adminSession.tipo!=='desenvolvedor');
     $("adminAuditoriaTab").classList.toggle('hidden',adminSession.tipo!=='desenvolvedor');
     $("adminConfigTab").classList.toggle('hidden',adminSession.tipo!=='desenvolvedor');
+    $("adminIntegracoesTab")?.classList.toggle('hidden',adminSession.tipo!=='desenvolvedor');
     $("adminDashboardTab")?.classList.toggle('hidden',adminSession.tipo!=='secretaria');
     $("adminSecretariaAccountsTab")?.classList.toggle('hidden',adminSession.tipo!=='desenvolvedor');
     $("adminArchiveButton")?.classList.toggle('hidden',!globalRole);
@@ -1687,6 +1679,8 @@ function abrirAbaAdmin(aba) {
     $("adminExames")?.classList.add("hidden");
     $("adminSecretariaDashboard")?.classList.add("hidden");
     $("adminSecretariaAccounts")?.classList.add("hidden");
+    $("adminIntegracoes")?.classList.add("hidden");
+    if (aba === "integracoes" && adminSession?.tipo === "desenvolvedor") { $("adminIntegracoes").classList.remove("hidden"); carregarIntegracoes(); }
 
     if (aba === "waitlist" && $("adminWaitlist")) { $("adminWaitlist").classList.remove("hidden"); carregarListaEsperaUBS(); }
     if (aba === "secretaria" && adminSession?.tipo === "secretaria") { $("adminSecretariaDashboard").classList.remove("hidden"); carregarPainelSecretaria(); }
@@ -1813,7 +1807,7 @@ async function atualizarSeloListaEsperaAdmin(){const ubsId=ubsIdAdminAtual();if(
 async function avisarPacienteListaEspera(waitlistId){const ubsId=ubsIdAdminAtual();if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_notify_waitlist',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');}else if(whatsappWindow)whatsappWindow.close();toast(d.message||'Aviso registrado.');await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
 function avisoVagaRepassada(resposta){return resposta?.vagaRepassada?` A vaga foi repassada a ${resposta.listaEspera?.nome||'um paciente'} da lista de espera — avise-o na aba "Lista de espera".`:'';}
 
-async function adicionarPacienteFilaPrincipal(waitlistId){if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!adminSession)return;if(!confirm('Adicionar este paciente à fila principal? Ele receberá uma notificação e o WhatsApp será aberto com a mensagem preenchida.'))return;const ubsId=ubsIdAdminAtual();if(!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_add_waitlist_to_queue',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');toast('Paciente adicionado. O WhatsApp foi aberto com a mensagem preenchida; toque em Enviar.');}else{if(whatsappWindow)whatsappWindow.close();toast('Paciente adicionado e notificado no sistema, mas não possui telefone cadastrado.');}await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
+async function adicionarPacienteFilaPrincipal(waitlistId){if(!Number.isInteger(Number(waitlistId))||Number(waitlistId)<1||!adminSession)return;if(!confirm('Adicionar este paciente à fila principal? Ele receberá uma notificação e o WhatsApp será aberto com a mensagem preenchida.'))return;const ubsId=ubsIdAdminAtual();if(!ubsId)return;let whatsappWindow=null;try{whatsappWindow=window.open('about:blank','_blank');const d=await api('admin_add_waitlist_to_queue',{method:'POST',body:{ubs_id:ubsId,waitlist_id:Number(waitlistId)}});if(d.whatsapp_url){if(whatsappWindow)whatsappWindow.location.href=d.whatsapp_url;else window.open(d.whatsapp_url,'_blank');toast('Paciente adicionado. O WhatsApp foi aberto com a mensagem preenchida; toque em Enviar.');}else{if(whatsappWindow)whatsappWindow.close();toast(d.message||'Paciente adicionado e notificado no sistema.');}await carregarListaEsperaUBS();}catch(e){if(whatsappWindow)whatsappWindow.close();toast(e.message);}}
 async function salvarCampanhasEventos() {
     const ubs = UBSAdminAtual();
     const button = $("saveCampaignsEventsButton");
@@ -3342,3 +3336,13 @@ document.addEventListener(
 /* ============================================================
    FIM
    ============================================================ */
+
+// ------ Integrações de envio (e-mail e WhatsApp) — somente desenvolvedor ------
+const CAMPOS_INTEGRACAO = {email_provedor:"intEmailProvedor",app_url:"intAppUrl",smtp_host:"intSmtpHost",smtp_porta:"intSmtpPorta",smtp_seguranca:"intSmtpSeguranca",smtp_usuario:"intSmtpUsuario",smtp_senha:"intSmtpSenha",resend_api_key:"intResendKey",email_remetente:"intEmailRemetente",email_nome:"intEmailNome",whatsapp_provedor:"intWhatsProvedor",meta_token:"intMetaToken",meta_phone_number_id:"intMetaPhoneId",meta_template:"intMetaTemplate",meta_idioma:"intMetaIdioma"};
+const SEGREDOS_INTEGRACAO = ["smtp_senha","resend_api_key","meta_token"];
+function atualizarCamposIntegracao(){const email=$("intEmailProvedor")?.value||"",whats=$("intWhatsProvedor")?.value||"manual";$("intSmtpCampos")?.classList.toggle("hidden",email!=="smtp");$("intResendCampos")?.classList.toggle("hidden",email!=="resend");$("intRemetenteCampos")?.classList.toggle("hidden",email==="");$("intMetaCampos")?.classList.toggle("hidden",whats!=="meta");}
+function mostrarStatusIntegracoes(cfg){const e=$("integracaoEmailStatus"),w=$("integracaoWhatsStatus");if(e){e.textContent=cfg.email_ativo?"E-mail: ativo":"E-mail: desativado";e.classList.toggle("is-on",!!cfg.email_ativo);}if(w){w.textContent=cfg.whatsapp_ativo?"WhatsApp: automático":"WhatsApp: manual";w.classList.toggle("is-on",!!cfg.whatsapp_ativo);}}
+function preencherIntegracoes(cfg){Object.entries(CAMPOS_INTEGRACAO).forEach(([chave,id])=>{const campo=$(id);if(!campo)return;if(SEGREDOS_INTEGRACAO.includes(chave)){campo.value="";campo.placeholder=cfg[chave+"_configurado"]?"•••••••• (salva — deixe em branco para manter)":"";}else campo.value=cfg[chave]??"";});mostrarStatusIntegracoes(cfg);atualizarCamposIntegracao();}
+async function carregarIntegracoes(){if(adminSession?.tipo!=="desenvolvedor")return;try{const d=await api("admin_integrations");preencherIntegracoes(d.integracoes||{});const ajuda=$("intAppUrlAjuda");if(ajuda&&d.urlDetectada)ajuda.textContent=`Usado nos links dos e-mails. Em branco, usa ${d.urlDetectada}`;}catch(e){toast(e.message);}}
+async function salvarIntegracoes(){const body={};Object.entries(CAMPOS_INTEGRACAO).forEach(([chave,id])=>{body[chave]=$(id)?.value.trim()||"";});try{const d=await api("admin_save_integrations",{method:"POST",body});preencherIntegracoes(d.integracoes||{});toast(d.message||"Integrações salvas.");return true;}catch(e){toast(e.message);return false;}}
+async function testarIntegracao(canal){const destino=(canal==="email"?$("intTesteEmail"):$("intTesteWhats"))?.value.trim()||"";if(!destino){toast(canal==="email"?"Informe um e-mail para o teste.":"Informe um celular para o teste.");return;}toast("Salvando e enviando teste...");if(!await salvarIntegracoes())return;try{const d=await api("admin_test_integration",{method:"POST",body:{canal,destino}});toast(d.message);}catch(e){toast(e.message);}}

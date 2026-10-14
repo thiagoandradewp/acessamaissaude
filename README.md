@@ -10,7 +10,7 @@ Este repositório contém a versão PHP do Acessa+ Saúde preparada para o runti
 4. Informe os dados do banco e crie a senha do administrador (Desenvolvedor). Se quiser testar, marque as UBS de demonstração e escolha a cidade/UF delas.
 5. Ao terminar, apague `install.php` da hospedagem.
 
-O instalador nunca apaga dados: se o banco já tiver o sistema instalado, ele para. As credenciais ficam em `config.local.php` (protegido pelo `.htaccess` e fora do Git); variáveis de ambiente `ACESSA_DB_*` continuam tendo prioridade. Requisitos: PHP 8.1+ com `pdo_mysql`.
+O instalador nunca apaga dados. Se o banco já tiver o sistema instalado (por exemplo, ao mudar o site de domínio ou pasta), informe o usuário e a senha do Desenvolvedor: o site é reconectado sem alterar nada. As credenciais ficam em `config.local.php` (protegido pelo `.htaccess` e fora do Git); variáveis de ambiente `ACESSA_DB_*` continuam tendo prioridade. Requisitos: PHP 8.1+ com `pdo_mysql`.
 
 ## Importante antes do deploy
 
@@ -26,7 +26,7 @@ Para evitar cobranças, mantenha o limite de gastos do Starter em `US$ 0`. Ao at
 
 O banco ainda precisa do esquema inicial. `database.sql` começa com `DROP DATABASE`; execute-o somente em uma instalação nova e vazia, nunca sobre uma base que já contenha dados. As migrações compatíveis restantes são executadas pela aplicação após a primeira conexão.
 
-Em instalações existentes com Supabase/PostgreSQL, aplique manualmente no SQL Editor as migrações necessárias de `migrations/`; para o filtro de UBS por localização, execute `migrations/20261009_ubs_location.sql` e `migrations/20261010_secretaria_location.sql`, e para os avisos da lista de espera execute `migrations/20261012_waitlist_ubs_notice.sql` antes de publicar o código. O bootstrap da aplicação não executa DDL no PostgreSQL.
+Em instalações existentes com Supabase/PostgreSQL, aplique manualmente no SQL Editor as migrações necessárias de `migrations/`; para o filtro de UBS por localização, execute `migrations/20261009_ubs_location.sql` e `migrations/20261010_secretaria_location.sql`, e para os avisos da lista de espera execute `migrations/20261012_waitlist_ubs_notice.sql` e, para as integrações de envio, `migrations/20261013_integracoes.sql` antes de publicar o código. O bootstrap da aplicação não executa DDL no PostgreSQL.
 
 Como este sistema pode armazenar informações de saúde, use dados fictícios no plano gratuito até avaliar requisitos de privacidade, backups e disponibilidade para o uso pretendido.
 
@@ -97,4 +97,12 @@ Usuários UBS visualizam a equipe em modo somente leitura. Somente Secretaria e 
 - **Localização das UBS:** só o desenvolvedor altera cidade/UF de uma UBS já localizada. A grafia da cidade é padronizada com a já cadastrada ("serra" vira "Serra"), evitando opções duplicadas no login.
 - **Login do paciente:** Estado → Cidade → UBS. Quando há uma única opção ela é selecionada automaticamente, e o navegador lembra o último estado/cidade escolhidos.
 - **Lista de espera:** quando uma consulta é cancelada — pelo paciente ou pela UBS — o primeiro da fila recebe a vaga automaticamente. Na aba **Lista de espera**, a UBS vê esses pacientes em "Vagas repassadas — avise o paciente" (com selo na aba) e envia o aviso pelo WhatsApp; o aviso fica registrado nas notificações do paciente. Cada paciente aguardando mostra quantas vagas livres existem na data, para a UBS encaixar quando houver.
+
+## Integrações de envio (e-mail e WhatsApp)
+
+No painel do Desenvolvedor, aba **Integrações (e-mail e WhatsApp)**:
+
+- **E-mail (SMTP ou Resend):** envia ao paciente a confirmação da consulta e o aviso de vaga liberada na lista de espera, e à clínica a confirmação de e-mail e a recuperação de senha. Na Hostinger, crie uma caixa de e-mail no domínio do site (ex.: `naoresponda@seudominio`) e use `smtp.hostinger.com`, porta 465, SSL. O botão **Enviar e-mail de teste** valida a configuração.
+- **WhatsApp:** no modo **Manual** (padrão), a equipe da UBS envia pelo próprio WhatsApp (o botão abre a conversa com a mensagem pronta). No modo **Automático**, o sistema envia pela API oficial do WhatsApp (Meta Cloud API) usando um modelo aprovado com uma variável no corpo (ex.: `Acessa+ Saúde: {{1}}`).
+- O paciente informa o e-mail (opcional) no cadastro ou no perfil. Senhas e tokens ficam na tabela `configuracoes` e nunca são devolvidos ao navegador; as variáveis `RESEND_API_KEY`, `MAIL_FROM` e `APP_URL` continuam valendo como reserva.
 

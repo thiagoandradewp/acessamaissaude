@@ -360,6 +360,16 @@ function testWaitlistNoticesAndRegionalSecretaria() {
 }
 testWaitlistNoticesAndRegionalSecretaria();
 
+function testPatientConfirmationSentBySystem() {
+  assert.doesNotMatch(js, /abrirLembreteWhatsApp/, 'O agendamento não deve abrir o WhatsApp do próprio paciente.');
+  assert.match(js, /mensagemConfirmacaoAgendamento\(data\.confirmacao\)/, 'O paciente deve ser informado por onde a confirmação foi enviada.');
+  assert.match(apiSource, /avisar_paciente\(\$pdo,\$patientId,\$id,'consulta_confirmada'/, 'A API deve enviar a confirmação ao paciente após o agendamento.');
+  assert.match(html, /id="emailPaciente"/, 'O cadastro do paciente deve aceitar e-mail para receber confirmações.');
+  assert.match(html, /id="adminIntegracoes"/, 'O desenvolvedor deve ter a aba de integrações.');
+  console.log('Confirmação enviada pelo sistema e integrações: OK');
+}
+testPatientConfirmationSentBySystem();
+
 async function runAsyncTests() {
   await testScheduleLoadingStates();
   await testStartupRetryAndErrorMessage();

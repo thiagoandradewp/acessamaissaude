@@ -111,50 +111,68 @@ if (!$installed && $requirementsOk && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 
     if ($db['host'] === '' || $db['name'] === '' || $db['user'] === '') $errors[] = 'Preencha servidor, nome do banco e usuário do banco.';
     if (!preg_match('/^\d{2,5}$/', $db['port'])) $errors[] = 'Porta do banco inválida.';
     if (!preg_match('/^[A-Za-z0-9._@-]{3,80}$/', $form['admin_user'])) $errors[] = 'Usuário do administrador: use de 3 a 80 caracteres (letras, números, ponto, hífen, sublinhado ou @).';
-    if (strlen($adminPass) < 12) $errors[] = 'A senha do administrador precisa ter pelo menos 12 caracteres.';
-    if ($adminPass !== (string)($_POST['admin_pass_confirm'] ?? '')) $errors[] = 'A confirmação da senha do administrador não confere.';
-    if ($demo && in_array(strtolower($form['admin_user']), ['admina','adminc','admind','admine','adminf'], true)) $errors[] = 'Esse usuário é usado por uma UBS de demonstração. Escolha outro nome para o administrador.';
-    if ($demo && (preg_match('/^.{2,120}$/uD', $demoCidade) !== 1 || !isset(UFS[$demoEstado]))) $errors[] = 'Para os dados de demonstração, informe a cidade e a UF das UBS de exemplo.';
+    // Regras da conta nova; só valem quando o banco ainda está vazio.
+    $newInstallErrors = [];
+    if (strlen($adminPass) < 12) $newInstallErrors[] = 'A senha do administrador precisa ter pelo menos 12 caracteres.';
+    if ($adminPass !== (string)($_POST['admin_pass_confirm'] ?? '')) $newInstallErrors[] = 'A confirmação da senha do administrador não confere.';
+    if ($demo && in_array(strtolower($form['admin_user']), ['admina','adminc','admind','admine','adminf'], true)) $newInstallErrors[] = 'Esse usuário é usado por uma UBS de demonstração. Escolha outro nome para o administrador.';
+    if ($demo && (preg_match('/^.{2,120}$/uD', $demoCidade) !== 1 || !isset(UFS[$demoEstado]))) $newInstallErrors[] = 'Para os dados de demonstração, informe a cidade e a UF das UBS de exemplo.';
 
     if (!$errors) {
         try {
             $pdo = installer_connect($db);
             $exists = $pdo->query("SHOW TABLES LIKE 'administradores'")->fetchColumn();
             if ($exists) {
-                throw new RuntimeException('Este banco já contém uma instalação do Acessa+ Saúde. Para não apagar dados, o instalador parou. Use um banco vazio ou, se for reinstalar, faça backup e esvazie o banco antes.');
-            }
-            $sql = file_get_contents(__DIR__ . '/database.sql');
-            if ($sql === false) throw new RuntimeException('Arquivo database.sql não encontrado. Envie todos os arquivos do sistema para a hospedagem.');
-
-            foreach (installer_statements($sql) as $statement) {
-                // "ADD COLUMN IF NOT EXISTS" só existe no MariaDB; no MySQL a coluna já vem no CREATE TABLE.
-                $mysqlSafe = preg_replace('/ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i', 'ADD COLUMN', $statement);
-                try {
-                    $pdo->exec($mysqlSafe);
-                } catch (PDOException $e) {
-                    if ((int)($e->errorInfo[1] ?? 0) === 1060 && $mysqlSafe !== $statement) continue; // coluna duplicada
-                    throw $e;
+                // Banco já instalado (ex.: site movido para outro domínio/pasta): só reconecta, sem alterar dados,
+                // e apenas para quem comprovar ser o desenvolvedor dessa instalação.
+                $q = $pdo->prepare("SELECT senha_hash FROM administradores WHERE usuario = ? AND tipo = 'desenvolvedor'");
+                $q->execute([$form['admin_user']]);
+                $hash = $q->fetchColumn();
+                if ($hash === false || !password_verify($adminPass, (string)$hash)) {
+                    throw new RuntimeException('Este banco já tem o Acessa+ Saúde instalado. Nada foi alterado. Para conectar este site a ele, informe no passo 3 o usuário e a senha do Desenvolvedor que você já usa para entrar no sistema.');
                 }
-            }
-
-            // As contas de exemplo têm senhas conhecidas: nunca permanecem.
-            $placeholders = implode(',', array_fill(0, count(DEMO_UBS), '?'));
-            $pdo->exec("DELETE FROM administradores WHERE tipo = 'desenvolvedor'");
-            if ($demo) {
-                $pdo->prepare("UPDATE ubs SET cidade = ?, estado = ? WHERE id IN ($placeholders)")->execute([$demoCidade, $demoEstado, ...DEMO_UBS]);
-                $pdo->prepare("UPDATE administradores SET senha_hash = ? WHERE ubs_id IN ($placeholders)")->execute([password_hash($adminPass, PASSWORD_DEFAULT), ...DEMO_UBS]);
+                $configContent = installer_local_config($db);
+                $configSaved = @file_put_contents(LOCAL_CONFIG, $configContent, LOCK_EX) !== false;
+                if ($configSaved) @chmod(LOCAL_CONFIG, 0640);
+                @file_put_contents(INSTALL_LOCK, 'Reconectado em ' . date('c') . PHP_EOL, LOCK_EX);
+                unset($_SESSION['install_token']);
+                $done = ['configSaved' => $configSaved, 'config' => $configContent, 'admin' => $form['admin_user'], 'demo' => false, 'reconnected' => true];
+            } elseif ($newInstallErrors) {
+                $errors = array_merge($errors, $newInstallErrors);
             } else {
-                $pdo->prepare("DELETE FROM ubs WHERE id IN ($placeholders)")->execute(DEMO_UBS);
-            }
-            $pdo->prepare("INSERT INTO administradores (usuario, senha_hash, tipo, ubs_id) VALUES (?, ?, 'desenvolvedor', NULL)")
-                ->execute([$form['admin_user'], password_hash($adminPass, PASSWORD_DEFAULT)]);
+                $sql = file_get_contents(__DIR__ . '/database.sql');
+                if ($sql === false) throw new RuntimeException('Arquivo database.sql não encontrado. Envie todos os arquivos do sistema para a hospedagem.');
 
-            $configContent = installer_local_config($db);
-            $configSaved = @file_put_contents(LOCAL_CONFIG, $configContent, LOCK_EX) !== false;
-            if ($configSaved) @chmod(LOCAL_CONFIG, 0640);
-            @file_put_contents(INSTALL_LOCK, 'Instalado em ' . date('c') . PHP_EOL, LOCK_EX);
-            unset($_SESSION['install_token']);
-            $done = ['configSaved' => $configSaved, 'config' => $configContent, 'admin' => $form['admin_user'], 'demo' => $demo];
+                foreach (installer_statements($sql) as $statement) {
+                    // "ADD COLUMN IF NOT EXISTS" só existe no MariaDB; no MySQL a coluna já vem no CREATE TABLE.
+                    $mysqlSafe = preg_replace('/ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i', 'ADD COLUMN', $statement);
+                    try {
+                        $pdo->exec($mysqlSafe);
+                    } catch (PDOException $e) {
+                        if ((int)($e->errorInfo[1] ?? 0) === 1060 && $mysqlSafe !== $statement) continue; // coluna duplicada
+                        throw $e;
+                    }
+                }
+
+                // As contas de exemplo têm senhas conhecidas: nunca permanecem.
+                $placeholders = implode(',', array_fill(0, count(DEMO_UBS), '?'));
+                $pdo->exec("DELETE FROM administradores WHERE tipo = 'desenvolvedor'");
+                if ($demo) {
+                    $pdo->prepare("UPDATE ubs SET cidade = ?, estado = ? WHERE id IN ($placeholders)")->execute([$demoCidade, $demoEstado, ...DEMO_UBS]);
+                    $pdo->prepare("UPDATE administradores SET senha_hash = ? WHERE ubs_id IN ($placeholders)")->execute([password_hash($adminPass, PASSWORD_DEFAULT), ...DEMO_UBS]);
+                } else {
+                    $pdo->prepare("DELETE FROM ubs WHERE id IN ($placeholders)")->execute(DEMO_UBS);
+                }
+                $pdo->prepare("INSERT INTO administradores (usuario, senha_hash, tipo, ubs_id) VALUES (?, ?, 'desenvolvedor', NULL)")
+                    ->execute([$form['admin_user'], password_hash($adminPass, PASSWORD_DEFAULT)]);
+
+                $configContent = installer_local_config($db);
+                $configSaved = @file_put_contents(LOCAL_CONFIG, $configContent, LOCK_EX) !== false;
+                if ($configSaved) @chmod(LOCAL_CONFIG, 0640);
+                @file_put_contents(INSTALL_LOCK, 'Instalado em ' . date('c') . PHP_EOL, LOCK_EX);
+                unset($_SESSION['install_token']);
+                $done = ['configSaved' => $configSaved, 'config' => $configContent, 'admin' => $form['admin_user'], 'demo' => $demo];
+            }
         } catch (Throwable $e) {
             $errors[] = installer_friendly_error($e);
         }
@@ -188,7 +206,11 @@ pre{background:#f1f8f8;padding:12px;border-radius:10px;overflow:auto;font-size:1
 <p class="hint">Instalação do sistema</p>
 
 <?php if ($done): ?>
+    <?php if (!empty($done['reconnected'])): ?>
+    <p class="ok"><strong>Site conectado à instalação existente!</strong> Nenhum dado foi alterado e o instalador foi bloqueado.</p>
+    <?php else: ?>
     <p class="ok"><strong>Instalação concluída!</strong> O banco foi preparado e o instalador foi bloqueado.</p>
+    <?php endif; ?>
     <?php if (!$done['configSaved']): ?>
         <p class="err">Não foi possível gravar o arquivo de configuração (a pasta não permite escrita). Crie, na mesma pasta do <code>index.php</code>, um arquivo chamado <code>config.local.php</code> com o conteúdo abaixo:</p>
         <pre><?= h($done['config']) ?></pre>
@@ -223,7 +245,7 @@ pre{background:#f1f8f8;padding:12px;border-radius:10px;overflow:auto;font-size:1
             <input type="hidden" name="token" value="<?= h($_SESSION['install_token']) ?>">
 
             <h2>2. Banco de dados MySQL</h2>
-            <p class="hint">Crie o banco e o usuário no painel da hospedagem (cPanel → Bancos de dados MySQL), vincule o usuário ao banco com todos os privilégios e informe os dados aqui. Use um banco vazio.</p>
+            <p class="hint">Crie o banco e o usuário no painel da hospedagem (cPanel → Bancos de dados MySQL), vincule o usuário ao banco com todos os privilégios e informe os dados aqui. Mudou o site de endereço? Informe o banco que já usa e, no passo 3, o usuário e a senha do Desenvolvedor: o site é reconectado sem alterar nenhum dado.</p>
             <div class="grid">
                 <div><label for="db_host">Servidor</label><input id="db_host" name="db_host" value="<?= h($form['db_host']) ?>" required><p class="hint">Quase sempre <code>localhost</code>.</p></div>
                 <div><label for="db_port">Porta</label><input id="db_port" name="db_port" value="<?= h($form['db_port']) ?>" inputmode="numeric" required></div>

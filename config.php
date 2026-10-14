@@ -131,6 +131,7 @@ function ensure_schema_compatibility(PDO $pdo, string $dbName): void
     $pdo->exec('CREATE TABLE IF NOT EXISTS lista_espera (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, paciente_id INT UNSIGNED NOT NULL, ubs_id VARCHAR(20) NOT NULL, especialidade VARCHAR(120) NOT NULL, data_consulta DATE NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY uq_lista_espera (paciente_id,ubs_id,especialidade,data_consulta)) ENGINE=InnoDB');
     $addColumn('lista_espera', 'status', "ENUM('pendente','agendado','cancelado') NOT NULL DEFAULT 'pendente' AFTER data_consulta");
     $addColumn('lista_espera', 'consulta_id', 'VARCHAR(60) NULL AFTER status');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS configuracoes (chave VARCHAR(80) PRIMARY KEY, valor TEXT NOT NULL, atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     if (!$columnExists('lista_espera', 'aviso_enviado_em')) {
         $addColumn('lista_espera', 'aviso_enviado_em', 'DATETIME NULL AFTER consulta_id');
         // Agendamentos anteriores ao aviso manual não devem aparecer como pendentes para a UBS.

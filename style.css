@@ -220,3 +220,15 @@ body.clinic-login-route #appShell{display:none!important}
 .admin-ubs-picker-row select{flex:1;min-width:0;margin:0}
 .admin-ubs-picker-row .admin-new-ubs{margin:0;white-space:nowrap}
 @media(max-width:560px){.admin-header h2{font-size:22px}.admin-header-actions{margin-left:0;width:100%}.admin-header-actions .btn{flex:1}.admin-ubs-picker-row{flex-direction:column;align-items:stretch}.admin-tabs button{padding:9px 13px;font-size:13px}}
+
+/* Integrações de envio */
+.integration-status{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 18px}
+.integration-pill{padding:6px 12px;border-radius:999px;background:#eef2f3;color:var(--muted);font-size:13px;font-weight:700}
+.integration-pill.is-on{background:var(--mint);color:#075b5d}
+.integration-card{margin:0 0 18px;padding:18px;border:1px solid #d7eeee;border-radius:16px;background:#fbfefe}
+.integration-card h4{margin:0 0 6px;color:#0a5458}
+.integration-card .field-help{display:block;margin-top:10px;line-height:1.5}
+.integration-test{display:flex;gap:10px;margin-top:14px}
+.integration-test input{flex:1;min-width:0;margin:0}
+.integration-test .btn{margin:0;white-space:nowrap}
+@media(max-width:560px){.integration-test{flex-direction:column}}

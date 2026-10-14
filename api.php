@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/common.php';
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/integracoes.php';
 $action = is_string($_GET['action'] ?? null) ? $_GET['action'] : '';
 $isProfessionalAction = str_starts_with($action, 'professional_');
 $professionalSessionLifetime = max(SESSION_ABSOLUTE_TIMEOUT, (int)ini_get('session.gc_maxlifetime'));
@@ -246,6 +247,9 @@ try {
         case 'admin_waitlist': admin_waitlist($pdo); break;
         case 'admin_add_waitlist_to_queue': admin_add_waitlist_to_queue($pdo, body_json()); break;
         case 'admin_notify_waitlist': admin_notify_waitlist($pdo, body_json()); break;
+        case 'admin_integrations': admin_integrations($pdo); break;
+        case 'admin_save_integrations': admin_save_integrations($pdo, body_json()); break;
+        case 'admin_test_integration': admin_test_integration($pdo, body_json()); break;
         case 'admin_appointments':
             admin_appointments($pdo);
             break;
@@ -749,8 +753,10 @@ function save_patient(PDO $pdo, array $data): never
     if (strlen($sus) > 20) json_response(['success'=>false,'message'=>'Cartão SUS inválido.'],422);
     if (strlen(preg_replace('/\D+/','',$sus))<8) json_response(['success'=>false,'message'=>'Cartão SUS inválido.'],422);
     $q=$pdo->prepare('SELECT id FROM ubs WHERE id=?'); $q->execute([$ubsId]); if(!$q->fetch()) json_response(['success'=>false,'message'=>'UBS de referência não encontrada.'],422);
+    $email=strtolower(trim((string)($data['email']??''))); if($email!==''&&(!filter_var($email,FILTER_VALIDATE_EMAIL)||strlen($email)>180)) json_response(['success'=>false,'message'=>'Informe um e-mail válido ou deixe o campo em branco.'],422);
     $codigo='PAC-'.date('ym').'-'.strtoupper(substr(hash('sha256',$sus),0,6)); $q=$pdo->prepare('INSERT INTO pacientes (codigo,nome,telefone,sus,ubs_id) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE nome=VALUES(nome),telefone=VALUES(telefone),ubs_id=COALESCE(VALUES(ubs_id),ubs_id)'); $q->execute([$codigo,$nome,$telefone,$sus,$ubsId?:null]);
-    $q=$pdo->prepare('SELECT id,codigo,nome,telefone,sus,ubs_id AS ubsId,endereco,data_nascimento AS dataNascimento,condicoes_saude AS condicoesSaude,alergias,medicamentos,informacoes_adicionais AS informacoesAdicionais FROM pacientes WHERE sus=?'); $q->execute([$sus]); json_response(['success'=>true,'patient'=>$q->fetch()]);
+    if($email!==''){$q=$pdo->prepare('UPDATE pacientes SET email=? WHERE sus=?');$q->execute([$email,$sus]);}
+    $q=$pdo->prepare('SELECT id,codigo,nome,telefone,email,sus,ubs_id AS ubsId,endereco,data_nascimento AS dataNascimento,condicoes_saude AS condicoesSaude,alergias,medicamentos,informacoes_adicionais AS informacoesAdicionais FROM pacientes WHERE sus=?'); $q->execute([$sus]); json_response(['success'=>true,'patient'=>$q->fetch()]);
 }
 
 function update_patient_profile(PDO $pdo, array $data): never
@@ -764,6 +770,8 @@ function update_patient_profile(PDO $pdo, array $data): never
     $alergias = trim((string)($data['alergias'] ?? ''));
     $medicamentos = trim((string)($data['medicamentos'] ?? ''));
     $informacoes = trim((string)($data['informacoes_adicionais'] ?? ''));
+    $email = strtolower(trim((string)($data['email'] ?? '')));
+    if ($email !== '' && (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 180)) json_response(['success'=>false,'message'=>'Informe um e-mail válido ou deixe o campo em branco.'],422);
 
     foreach (['nome'=>$nome,'telefone'=>$telefone,'endereco'=>$endereco,'condicoes_saude'=>$condicoes,'alergias'=>$alergias,'medicamentos'=>$medicamentos,'informacoes_adicionais'=>$informacoes] as $campo=>$valor) {
         if (strlen($valor) > 2000) json_response(['success'=>false,'message'=>'O campo '.$campo.' excede o limite permitido.'],422);
@@ -776,11 +784,11 @@ function update_patient_profile(PDO $pdo, array $data): never
     if ($dataNascimento !== '' && new DateTime($dataNascimento) > new DateTime('today')) json_response(['success'=>false,'message'=>'A data de nascimento não pode ser futura.'],422);
     $stmt = $pdo->prepare(
         'UPDATE pacientes
-         SET nome = ?, telefone = ?, endereco = ?, data_nascimento = ?,
+         SET nome = ?, telefone = ?, email = ?, endereco = ?, data_nascimento = ?,
              condicoes_saude = ?, alergias = ?, medicamentos = ?, informacoes_adicionais = ?
          WHERE sus = ?'
     );
-    $stmt->execute([$nome, $telefone, $endereco ?: null, $dataNascimento ?: null, $condicoes ?: null, $alergias ?: null, $medicamentos ?: null, $informacoes ?: null, $sus]);
+    $stmt->execute([$nome, $telefone, $email ?: null, $endereco ?: null, $dataNascimento ?: null, $condicoes ?: null, $alergias ?: null, $medicamentos ?: null, $informacoes ?: null, $sus]);
     if ($stmt->rowCount() === 0) {
         $check = $pdo->prepare('SELECT id FROM pacientes WHERE sus = ?');
         $check->execute([$sus]);
@@ -788,7 +796,7 @@ function update_patient_profile(PDO $pdo, array $data): never
             json_response(['success' => false, 'message' => 'Paciente não encontrado.'], 404);
         }
     }
-    $q=$pdo->prepare('SELECT id,nome,telefone,sus,ubs_id AS ubsId,endereco,data_nascimento AS dataNascimento,condicoes_saude AS condicoesSaude,alergias,medicamentos,informacoes_adicionais AS informacoesAdicionais FROM pacientes WHERE sus=?');
+    $q=$pdo->prepare('SELECT id,nome,telefone,email,sus,ubs_id AS ubsId,endereco,data_nascimento AS dataNascimento,condicoes_saude AS condicoesSaude,alergias,medicamentos,informacoes_adicionais AS informacoesAdicionais FROM pacientes WHERE sus=?');
     $q->execute([$sus]);
     json_response(['success' => true, 'patient' => $q->fetch()]);
 }
@@ -877,7 +885,11 @@ function promote_ubs_waitlist(PDO $pdo,string $ubsId,string $especialidade,strin
         $pdo->prepare('UPDATE lista_espera SET status="agendado",consulta_id=? WHERE id=?')->execute([$id,$row['id']]);
         $msg="Olá, {$row['nome']}! Uma vaga ficou disponível na {$unit['nome']}. Sua consulta de {$especialidade} foi agendada automaticamente para ".date('d/m/Y',strtotime($date))." e está confirmada. Posição na fila: {$fila}. Protocolo: {$id}.";
         $pdo->prepare('INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,status) VALUES (?,? ,"push","lista_espera_agendada",?,NOW(),"pendente")')->execute([$row['paciente_id'],$id,$msg]);
-        $pdo->commit(); audit_event($pdo,'lista_espera_vaga_repassada','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>(int)$row['id']]); return ['id'=>$id,'patientId'=>(int)$row['paciente_id'],'nome'=>$row['nome']];
+        $pdo->commit(); audit_event($pdo,'lista_espera_vaga_repassada','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>(int)$row['id']]);
+        $canais=avisar_paciente($pdo,(int)$row['paciente_id'],$id,'lista_espera_agendada','Vaga liberada: consulta confirmada',$msg);
+        // Avisado automaticamente pelo WhatsApp: sai da lista de avisos pendentes da UBS.
+        if(in_array('whatsapp',$canais,true))$pdo->prepare('UPDATE lista_espera SET aviso_enviado_em=NOW() WHERE id=?')->execute([$row['id']]);
+        return ['id'=>$id,'patientId'=>(int)$row['paciente_id'],'nome'=>$row['nome'],'canais'=>$canais];
     } catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
 }
 function get_occupied_slots(PDO $pdo,string $ubsId,string $especialidade,string $date): never
@@ -892,7 +904,12 @@ function book_appointment(PDO $pdo,array $data): never
  $ubsId=required_string($data,'ubs_id'); $sus=required_string($data,'sus'); $especialidade=required_string($data,'especialidade'); $date=required_string($data,'data'); $assunto=trim((string)($data['assunto'] ?? ''));
  if(!valid_date($date)) json_response(['success'=>false,'message'=>'Data inválida.'],422); if(!is_business_day($date)) json_response(['success'=>false,'message'=>'A UBS não realiza agendamentos aos finais de semana ou nos feriados fixos.'],422); if(new DateTime($date)<new DateTime('today')) json_response(['success'=>false,'message'=>'Não é possível agendar uma data que já passou.'],422);
  $ubs=get_ubs($pdo,$ubsId,false); $limQ=$pdo->prepare('SELECT limite_diario FROM ubs WHERE id=?');$limQ->execute([$ubsId]);$limite=max(1,(int)$limQ->fetchColumn()); $patientId=patient_id_by_sus($pdo,$sus); if($patientId===null) json_response(['success'=>false,'message'=>'Paciente não cadastrado.'],422); if(!in_array($especialidade,$ubs['especialidades'],true)) json_response(['success'=>false,'message'=>'A especialidade selecionada não está disponível nesta UBS.'],422);
- $pdo->beginTransaction(); try { $lock=$pdo->prepare('SELECT id FROM ubs WHERE id=? FOR UPDATE'); $lock->execute([$ubsId]); $q=$pdo->prepare('SELECT COUNT(*) FROM consultas WHERE ubs_id=? AND especialidade=? AND data_consulta=? AND status="agendado"'); $q->execute([$ubsId,$especialidade,$date]); $ocupadas=(int)$q->fetchColumn(); if($ocupadas>=$limite){$pdo->rollBack();json_response(['success'=>false,'listaEspera'=>true,'message'=>"O limite diário de {$limite} atendimentos desta especialidade já foi atingido. Deseja entrar na lista de espera?",'ubs_id'=>$ubsId,'especialidade'=>$especialidade,'data'=>$date],409);} $q=$pdo->prepare('SELECT id FROM consultas WHERE paciente_id=? AND ubs_id=? AND especialidade=? AND data_consulta=? AND status="agendado" FOR UPDATE'); $q->execute([$patientId,$ubsId,$especialidade,$date]); if($q->fetch()){$pdo->rollBack();json_response(['success'=>false,'message'=>'Você já possui uma consulta para esta especialidade nesta data.'],409);} $id='CONS-'.date('YmdHis').'-'.strtoupper(bin2hex(random_bytes(3))); $fila=$ocupadas+1; $q=$pdo->prepare('INSERT INTO consultas (id,ubs_id,paciente_id,especialidade,assunto,data_consulta,horario,fila,status) VALUES (?,?,?,?,?,?,"00:00:00",?,"agendado")'); $q->execute([$id,$ubsId,$patientId,$especialidade,$assunto ?: null,$date,$fila]); enqueue_reminder($pdo,$patientId,$id,$date); $pdo->commit(); json_response(['success'=>true,'appointment'=>appointment_by_id($pdo,$id)]); } catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
+ $pdo->beginTransaction(); try { $lock=$pdo->prepare('SELECT id FROM ubs WHERE id=? FOR UPDATE'); $lock->execute([$ubsId]); $q=$pdo->prepare('SELECT COUNT(*) FROM consultas WHERE ubs_id=? AND especialidade=? AND data_consulta=? AND status="agendado"'); $q->execute([$ubsId,$especialidade,$date]); $ocupadas=(int)$q->fetchColumn(); if($ocupadas>=$limite){$pdo->rollBack();json_response(['success'=>false,'listaEspera'=>true,'message'=>"O limite diário de {$limite} atendimentos desta especialidade já foi atingido. Deseja entrar na lista de espera?",'ubs_id'=>$ubsId,'especialidade'=>$especialidade,'data'=>$date],409);} $q=$pdo->prepare('SELECT id FROM consultas WHERE paciente_id=? AND ubs_id=? AND especialidade=? AND data_consulta=? AND status="agendado" FOR UPDATE'); $q->execute([$patientId,$ubsId,$especialidade,$date]); if($q->fetch()){$pdo->rollBack();json_response(['success'=>false,'message'=>'Você já possui uma consulta para esta especialidade nesta data.'],409);} $id='CONS-'.date('YmdHis').'-'.strtoupper(bin2hex(random_bytes(3))); $fila=$ocupadas+1; $q=$pdo->prepare('INSERT INTO consultas (id,ubs_id,paciente_id,especialidade,assunto,data_consulta,horario,fila,status) VALUES (?,?,?,?,?,?,"00:00:00",?,"agendado")'); $q->execute([$id,$ubsId,$patientId,$especialidade,$assunto ?: null,$date,$fila]); enqueue_reminder($pdo,$patientId,$id,$date); $pdo->commit(); } catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
+ $appointment=appointment_by_id($pdo,$id);
+ // Confirmação enviada pelo sistema ao paciente (e-mail/WhatsApp automáticos, quando configurados).
+ $msg="Olá, {$appointment['nome']}! Sua consulta de {$especialidade} na {$appointment['ubsNome']} está confirmada para ".date('d/m/Y',strtotime($date)).". Sua posição na fila é {$fila}. Protocolo: {$id}. Leve o Cartão SUS e um documento com foto. Se não puder comparecer, cancele pelo Acessa+ Saúde para liberar a vaga.";
+ $canais=avisar_paciente($pdo,$patientId,$id,'consulta_confirmada','Consulta confirmada',$msg);
+ json_response(['success'=>true,'appointment'=>$appointment,'confirmacao'=>$canais]);
 }
 
 function appointment_by_id(PDO $pdo, string $id): array
@@ -2058,11 +2075,14 @@ function admin_notify_waitlist(PDO $pdo,array $data): never {
     $q->execute([$waitlistId,$ubsId]);$row=$q->fetch();
     if(!$row)json_response(['success'=>false,'message'=>'Este agendamento da lista de espera não está mais ativo. Atualize a lista.'],409);
     $msg="Olá, {$row['nome']}! Aqui é a {$row['ubs_nome']}. Uma vaga foi liberada e você saiu da lista de espera: sua consulta de {$row['especialidade']} está confirmada para ".date('d/m/Y',strtotime((string)$row['data_consulta'])).". Posição na fila: {$row['fila']}. Protocolo: {$row['consulta_id']}. Se não puder comparecer, cancele pelo Acessa+ Saúde para liberar a vaga.";
-    $pdo->prepare("INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,enviada_em,status) SELECT paciente_id,consulta_id,'whatsapp','lista_espera_aviso_ubs',?,NOW(),NOW(),'enviada' FROM lista_espera WHERE id=?")->execute([$msg,$waitlistId]);
+    $q=$pdo->prepare('SELECT paciente_id FROM lista_espera WHERE id=?');$q->execute([$waitlistId]);$pacienteId=(int)$q->fetchColumn();
+    $canais=avisar_paciente($pdo,$pacienteId,(string)$row['consulta_id'],'lista_espera_aviso_ubs','Vaga liberada: consulta confirmada',$msg);
+    $url=in_array('whatsapp',$canais,true)?null:whatsapp_url($row['telefone'],$msg);
+    if($url!==null)$pdo->prepare("INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,enviada_em,status) VALUES (?,?,'whatsapp','lista_espera_aviso_ubs',?,NOW(),NOW(),'enviada')")->execute([$pacienteId,$row['consulta_id'],$msg]);
     $pdo->prepare('UPDATE lista_espera SET aviso_enviado_em=NOW() WHERE id=?')->execute([$waitlistId]);
-    audit_event($pdo,'lista_espera_aviso_enviado','lista_espera',(string)$waitlistId,['ubs_id'=>$ubsId,'consulta_id'=>$row['consulta_id']]);
-    $url=whatsapp_url($row['telefone'],$msg);
-    json_response(['success'=>true,'whatsapp_url'=>$url,'message'=>$url?'Aviso registrado. Envie a mensagem no WhatsApp aberto.':'Aviso registrado, mas o paciente não tem telefone cadastrado.']);
+    audit_event($pdo,'lista_espera_aviso_enviado','lista_espera',(string)$waitlistId,['ubs_id'=>$ubsId,'consulta_id'=>$row['consulta_id'],'canais'=>$canais]);
+    $automatico=$canais?' Enviado automaticamente por '.implode(' e ',array_map(static fn($c)=>$c==='email'?'e-mail':'WhatsApp',$canais)).'.':'';
+    json_response(['success'=>true,'whatsapp_url'=>$url,'canais'=>$canais,'message'=>in_array('whatsapp',$canais,true)?'Paciente avisado.'.$automatico:($url?'Aviso registrado.'.$automatico.' Envie a mensagem no WhatsApp aberto.':'Aviso registrado.'.($automatico?:' O paciente não tem telefone cadastrado.'))]);
 }
 function admin_add_waitlist_to_queue(PDO $pdo,array $data): never {
     $ubsId=required_string($data,'ubs_id');$waitlistId=(int)($data['waitlist_id']??0);if($waitlistId<1)json_response(['success'=>false,'message'=>'Paciente da lista de espera não informado.'],422);authorize_ubs($ubsId);
@@ -2074,9 +2094,42 @@ function admin_add_waitlist_to_queue(PDO $pdo,array $data): never {
         $id='CONS-'.date('YmdHis').'-'.strtoupper(bin2hex(random_bytes(3)));$ins=$pdo->prepare('INSERT INTO consultas (id,ubs_id,paciente_id,especialidade,assunto,data_consulta,horario,fila,status) VALUES (?,?,?,?,?,? ,"00:00:00",?,"agendado")');$ins->execute([$id,$ubsId,$row['paciente_id'],$row['especialidade'],'Encaixe administrativo da lista de espera',$row['data_consulta'],$fila]);
         $pdo->prepare('UPDATE lista_espera SET status="agendado",consulta_id=?,aviso_enviado_em=NOW() WHERE id=? AND status="pendente"')->execute([$id,$waitlistId]);
         $msg="Olá, {$row['nome']}! Você foi encaixado(a) na fila da {$unit['nome']} para {$row['especialidade']} em ".date('d/m/Y',strtotime($row['data_consulta'])).". Sua posição é {$fila}. Protocolo: {$id}.";$pdo->prepare('INSERT INTO notificacoes (paciente_id,consulta_id,canal,tipo,mensagem,agendada_para,status) VALUES (?,? ,"push","lista_espera_encaixada",?,NOW(),"pendente")')->execute([$row['paciente_id'],$id,$msg]);
-        $whatsappUrl=whatsapp_url($row['telefone']??null,$msg);
-        $pdo->commit();audit_event($pdo,'paciente_encaixado_lista_espera','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>$waitlistId,'fila'=>$fila]);json_response(['success'=>true,'appointment_id'=>$id,'fila'=>$fila,'whatsapp_url'=>$whatsappUrl,'message'=>'Paciente adicionado à fila principal e notificado no sistema.']);
+        $whatsappUrl=null;
+        $pdo->commit();audit_event($pdo,'paciente_encaixado_lista_espera','consultas',$id,['ubs_id'=>$ubsId,'lista_espera_id'=>$waitlistId,'fila'=>$fila]);
+        $canais=avisar_paciente($pdo,(int)$row['paciente_id'],$id,'lista_espera_encaixada','Você foi encaixado(a) na fila',$msg);
+        if(!in_array('whatsapp',$canais,true))$whatsappUrl=whatsapp_url($row['telefone']??null,$msg);
+        json_response(['success'=>true,'appointment_id'=>$id,'fila'=>$fila,'whatsapp_url'=>$whatsappUrl,'canais'=>$canais,'message'=>in_array('whatsapp',$canais,true)?'Paciente adicionado à fila principal e avisado automaticamente pelo WhatsApp.':'Paciente adicionado à fila principal e notificado no sistema.']);
     }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
+}
+function require_developer(): array
+{
+    $session=require_admin();
+    if($session['tipo']!=='desenvolvedor')json_response(['success'=>false,'message'=>'Somente o desenvolvedor pode configurar as integrações.'],403);
+    return $session;
+}
+function admin_integrations(PDO $pdo): never {
+    require_developer();
+    $cfg=integracoes($pdo,true);
+    $sugestao='';try{$sugestao=url_publica_site(array_merge($cfg,['app_url'=>'']));}catch(Throwable $e){}
+    json_response(['success'=>true,'integracoes'=>integracoes_publicas($cfg),'urlDetectada'=>rtrim($sugestao,'/')]);
+}
+function admin_save_integrations(PDO $pdo,array $data): never {
+    require_developer();
+    try{$cfg=salvar_integracoes($pdo,$data);}catch(InvalidArgumentException $e){json_response(['success'=>false,'message'=>$e->getMessage()],422);}
+    audit_event($pdo,'integracoes_atualizadas','configuracoes',null,['email'=>$cfg['email_provedor'],'whatsapp'=>$cfg['whatsapp_provedor']]);
+    json_response(['success'=>true,'message'=>'Integrações salvas.','integracoes'=>integracoes_publicas($cfg)]);
+}
+function admin_test_integration(PDO $pdo,array $data): never {
+    require_developer();
+    $canal=trim((string)($data['canal']??''));$destino=trim((string)($data['destino']??''));
+    $msg='Teste do Acessa+ Saúde: se você recebeu esta mensagem, o envio automático está funcionando.';
+    try{
+        if($canal==='email'){enviar_email($pdo,$destino,'Teste de envio — Acessa+ Saúde',html_email_paciente('Teste de envio',$msg),$msg);$ok='E-mail de teste enviado para '.$destino.'. Confira a caixa de entrada e o spam.';}
+        elseif($canal==='whatsapp'){enviar_whatsapp_api($pdo,$destino,$msg);$ok='Mensagem de teste enviada pelo WhatsApp.';}
+        else json_response(['success'=>false,'message'=>'Canal inválido.'],422);
+    }catch(Throwable $e){json_response(['success'=>false,'message'=>$e->getMessage()],422);}
+    audit_event($pdo,'integracao_testada','configuracoes',null,['canal'=>$canal]);
+    json_response(['success'=>true,'message'=>$ok]);
 }
 function admin_appointments(PDO $pdo): never
 {
@@ -2265,17 +2318,12 @@ function public_clinic_slots(PDO $pdo,string $slug,string $date): never {
     $q=$pdo->prepare("SELECT id,confirmacao_automatica AS confirmacaoAutomatica,cancelamento_ate_horas AS cancelamentoAteHoras,remarcacao_ate_horas AS remarcacaoAteHoras FROM profissionais WHERE slug=? AND status='ativo'");$q->execute([$slug]);$p=$q->fetch();if(!$p)json_response(['success'=>false,'message'=>'Clínica não encontrada.'],404);
     json_response(['success'=>true,'slots'=>professional_slots($pdo,(int)$p['id'],$date),'confirmacaoAutomatica'=>database_bool($p['confirmacaoAutomatica']??false)]);
 }
-function email_delivery_configured(): bool {return (bool)(getenv('RESEND_API_KEY')&&getenv('MAIL_FROM')&&getenv('APP_URL'));}
+function email_delivery_configured(): bool {return email_configurado(integracoes(db()));}
 function app_public_url(): string {
-    $url=rtrim(trim((string)(getenv('APP_URL')?:'')),'/');if($url===''||!filter_var($url,FILTER_VALIDATE_URL))throw new RuntimeException('Configure APP_URL com a URL pública HTTPS do site.');
-    if(getenv('VERCEL')==='1'&&!str_starts_with(strtolower($url),'https://'))throw new RuntimeException('APP_URL precisa usar HTTPS em produção.');return $url.'/';
+    $url=url_publica_site(integracoes(db()));
+    if(getenv('VERCEL')==='1'&&!str_starts_with(strtolower($url),'https://'))throw new RuntimeException('O endereço do site precisa usar HTTPS em produção.');return $url;
 }
-function send_email_message(string $to,string $subject,string $html,string $text): void {
-    $apiKey=(string)(getenv('RESEND_API_KEY')?:'');$from=trim((string)(getenv('MAIL_FROM')?:''));if($apiKey===''||$from===''||!filter_var($to,FILTER_VALIDATE_EMAIL))throw new RuntimeException('Serviço de e-mail não configurado.');
-    if(!function_exists('curl_init'))throw new RuntimeException('Ative cURL para enviar e-mails transacionais.');
-    $payload=json_encode(['from'=>$from,'to'=>[$to],'subject'=>$subject,'html'=>$html,'text'=>$text],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-    $ch=curl_init('https://api.resend.com/emails');curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],CURLOPT_POSTFIELDS=>$payload,CURLOPT_TIMEOUT=>12]);$response=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);$error=curl_error($ch);curl_close($ch);if($response===false||$error!==''||$status<200||$status>=300)throw new RuntimeException('Falha ao enviar e-mail transacional.');
-}
+function send_email_message(string $to,string $subject,string $html,string $text): void {enviar_email(db(),$to,$subject,$html,$text);}
 function send_professional_token(PDO $pdo,int $professionalId,string $type,string $email,string $name): bool {
     $token=bin2hex(random_bytes(32));$hours=$type==='verificar_email'?24:1;$q=$pdo->prepare('UPDATE tokens_profissionais SET consumido_em=NOW() WHERE profissional_id=? AND tipo=? AND consumido_em IS NULL');$q->execute([$professionalId,$type]);$q=$pdo->prepare('INSERT INTO tokens_profissionais (profissional_id,tipo,token_hash,expira_em) VALUES (?,?,?,DATE_ADD(NOW(),INTERVAL ? HOUR))');$q->execute([$professionalId,$type,hash('sha256',$token),$hours]);
     $param=$type==='verificar_email'?'verificar_email':'redefinir_senha';$url=app_public_url().'?'.$param.'='.rawurlencode($token);$safe=htmlspecialchars($name,ENT_QUOTES,'UTF-8');$label=$type==='verificar_email'?'Confirmar e-mail':'Redefinir senha';$subject=$type==='verificar_email'?'Confirme seu e-mail — Acessa+ Saúde':'Redefinição de senha — Acessa+ Saúde';
